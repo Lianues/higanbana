@@ -1,0 +1,146 @@
+<div id="higanbana_settings" class="hb-settings">
+  <div class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+      <b>彼岸花</b>
+      <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    </div>
+    <div class="inline-drawer-content">
+      <div class="hb-panel-root" id="hb_panel_root">
+        <div class="hb-panel-body">
+          <section class="hb-subpanel" data-id="binding">
+            <button class="hb-subpanel-header" type="button" aria-expanded="true">
+              <div class="hb-subpanel-title">角色绑定</div>
+              <div class="hb-subpanel-indicator">−</div>
+            </button>
+            <div class="hb-subpanel-body" style="display: block;">
+              <div class="hb-row">
+                <label class="hb-label">当前角色</label>
+                <div id="hb_char_info" class="hb-info"></div>
+              </div>
+
+              <section class="hb-subpanel hb-subpanel-nested" data-id="add_project">
+                <button class="hb-subpanel-header" type="button" aria-expanded="true">
+                  <div class="hb-subpanel-title">新增项目</div>
+                  <div class="hb-subpanel-indicator">−</div>
+                </button>
+                <div class="hb-subpanel-body" style="display: block;">
+                  <div class="hb-row">
+                    <label class="hb-label" for="hb_new_title">项目标题（可选）</label>
+                    <input id="hb_new_title" class="text_pole" type="text" spellcheck="false" placeholder="例如：我的前端项目" />
+                  </div>
+
+                  <div class="hb-row">
+                    <label class="hb-label" for="hb_placeholder">占位符</label>
+                    <input id="hb_placeholder" class="text_pole" type="text" spellcheck="false" placeholder="{{WEB_APP1}}" />
+                    <div class="hb-actions">
+                      <button id="hb_copy_placeholder" class="menu_button">复制</button>
+                      <button id="hb_insert_placeholder" class="menu_button">插入到输入框</button>
+                    </div>
+                  </div>
+
+                  <div class="hb-row">
+                    <label class="hb-label" for="hb_homepage">入口 HTML（相对路径）</label>
+                    <input id="hb_homepage" class="text_pole" type="text" spellcheck="false" placeholder="index.html" />
+                    <div class="hb-subhint">填写 zip 内的入口相对路径，例如 <code>index.html</code> 或 <code>dist/index.html</code>。</div>
+                  </div>
+
+                  <div class="hb-row">
+                    <label class="hb-label" for="hb_fix_root_relative">修复以 / 开头的资源路径</label>
+                    <input id="hb_fix_root_relative" type="checkbox" />
+                    <div class="hb-subhint">会把 HTML/CSS/JS 中的 <code>/assets/..</code> 等根路径改写为 VFS 路径。</div>
+                  </div>
+
+                  <div class="hb-row">
+                    <label class="hb-label" for="hb_new_show_title">消息列表显示标题</label>
+                    <input id="hb_new_show_title" type="checkbox" />
+                    <div class="hb-subhint">在 iframe 上方显示标题栏文本（可随时在项目列表里单独开关）。</div>
+                  </div>
+
+                  <div class="hb-row">
+                    <label class="hb-label" for="hb_bind_zip">导入本地 zip（嵌入）</label>
+                    <div class="hb-file-picker">
+                      <input id="hb_bind_zip" type="file" accept=".zip" />
+                      <button id="hb_pick_zip_btn" class="menu_button" type="button">选择 zip</button>
+                      <div id="hb_bind_zip_name" class="hb-file-name">（未选择文件）</div>
+                    </div>
+                    <div class="hb-actions">
+                      <button id="hb_bind_zip_btn" class="menu_button">添加嵌入项目</button>
+                    </div>
+                  </div>
+
+                  <div class="hb-row">
+                    <label class="hb-label" for="hb_bind_url">导入 zip URL</label>
+                    <input id="hb_bind_url" class="text_pole" type="text" spellcheck="false" placeholder="https://example.com/app.zip" />
+                    <div class="hb-actions">
+                      <button id="hb_bind_url_btn" class="menu_button">添加 URL 项目</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="hb-subpanel hb-subpanel-nested" data-id="project_list">
+                <button class="hb-subpanel-header" type="button" aria-expanded="true">
+                  <div class="hb-subpanel-title">项目列表</div>
+                  <div class="hb-subpanel-indicator">−</div>
+                </button>
+                <div class="hb-subpanel-body" style="display: block;">
+                  <div id="hb_projects_list" class="hb-projects-list"></div>
+                  <div class="hb-subhint">提示：在消息中输入某个项目的占位符即可渲染对应 iframe 沙盒。</div>
+                </div>
+              </section>
+
+              <div class="hb-row">
+                <label class="hb-label">全局操作</label>
+                <div class="hb-actions">
+                  <button id="hb_import_from_card" class="menu_button">导入所有嵌入项目到本地缓存</button>
+                  <button id="hb_unbind" class="menu_button danger">解绑全部项目</button>
+                </div>
+              </div>
+
+              <div id="hb_status" class="hb-status"></div>
+            </div>
+          </section>
+
+          <section class="hb-subpanel" data-id="chat_render">
+            <button class="hb-subpanel-header" type="button" aria-expanded="false">
+              <div class="hb-subpanel-title">消息渲染</div>
+              <div class="hb-subpanel-indicator">+</div>
+            </button>
+            <div class="hb-subpanel-body" style="display: none;">
+              <div class="hb-row">
+                <label class="hb-label" for="hb_render_html_blocks">渲染消息中的 HTML 代码块</label>
+                <input id="hb_render_html_blocks" type="checkbox" />
+                <div class="hb-subhint">启用后，消息中的 HTML 代码块会自动渲染为 iframe（代码块将被隐藏；关闭开关可恢复显示）。</div>
+              </div>
+              <div class="hb-row">
+                <label class="hb-label" for="hb_render_html_blocks_blob">以 Blob URL 渲染（分配页面）</label>
+                <input id="hb_render_html_blocks_blob" type="checkbox" />
+                <div class="hb-subhint">启用后会为每个 HTML 代码块创建一个 <code>blob:</code> 页面，行为更接近独立网页。</div>
+              </div>
+              <div class="hb-row">
+                <label class="hb-label" for="hb_render_html_blocks_titlebar">显示标题栏（新标签页打开）</label>
+                <input id="hb_render_html_blocks_titlebar" type="checkbox" />
+                <div class="hb-subhint">启用后会像独立前端项目一样显示标题栏，并提供“新标签页打开”。</div>
+              </div>
+
+            </div>
+          </section>
+
+          <section class="hb-subpanel" data-id="safety">
+            <button class="hb-subpanel-header" type="button" aria-expanded="false">
+              <div class="hb-subpanel-title">安全提示</div>
+              <div class="hb-subpanel-indicator">+</div>
+            </button>
+            <div class="hb-subpanel-body" style="display: none;">
+              <div class="hb-hint">
+                导入/嵌入 zip 等价于运行其中的前端代码（含 JS）。彼岸花为了让 VFS 资源在 iframe 中可用，会使用
+                <code>sandbox="allow-scripts allow-same-origin"</code>。请只导入可信项目。
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+

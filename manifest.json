@@ -1,0 +1,14 @@
+{
+  "display_name": "彼岸花",
+  "loading_order": 60,
+  "requires": [],
+  "optional": [],
+  "dependencies": [],
+  "js": "dist/index.js",
+  "css": "dist/index.css",
+  "author": "Limerence",
+  "version": "0.1.0",
+  "homePage": "",
+  "auto_update": true
+}
+
