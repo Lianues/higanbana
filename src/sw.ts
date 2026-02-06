@@ -1,6 +1,8 @@
 // Service Worker for Higanbana VFS
 // NOTE: 由于主 tsconfig 包含 DOM lib，这里使用类型断言避免 self 类型冲突
 
+import { injectHbHtmlRuntime } from './hbHtmlRuntime';
+
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
 const CACHE_PREFIX = 'st-higanbana-vfs-';
@@ -54,7 +56,34 @@ sw.addEventListener('fetch', (event: FetchEvent) => {
     (async () => {
       const cache = await caches.open(cacheName);
       const cached = await cache.match(request);
-      if (cached) return cached;
+      if (cached) {
+        // 给 VFS 的 HTML 页面注入运行时兼容层：
+        // - 自动处理 CSRF（新标签页打开时不会 403）
+        // - 提供 ST_API 代理（可选；若主页面有 ST_API）
+        // - 提供跨域测高上报（父页面可选监听）
+        try {
+          const ct = String(cached.headers.get('content-type') || '').toLowerCase();
+          const accept = String(request.headers.get('accept') || '').toLowerCase();
+          const dest = (request as any).destination as string | undefined;
+          const isDocument = request.mode === 'navigate' || dest === 'document';
+          const isHtml = ct.includes('text/html') || accept.includes('text/html');
+          // 只注入“文档导航”的 HTML，避免用户在页面内 fetch('template.html') 时意外被注入脚本
+          if (!isDocument) return cached;
+          if (!isHtml) return cached;
+
+          const raw = await cached.clone().text();
+          const patched = injectHbHtmlRuntime(raw, { origin: url.origin, forceBaseHref: false });
+
+          // Preserve original headers as much as possible
+          const headers = new Headers(cached.headers);
+          if (!headers.get('content-type')) {
+            headers.set('content-type', 'text/html; charset=utf-8');
+          }
+          return new Response(patched, { status: cached.status, statusText: cached.statusText, headers });
+        } catch {
+          return cached;
+        }
+      }
 
       // 404 fallback (do not fall back to network; the VFS only exists in cache)
       const accept = request.headers.get('accept') || '';

@@ -78,7 +78,8 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
   }
 
   try {
-    const reg = await navigator.serviceWorker.register(swUrl, { scope: extensionBase });
+    // sw.js 由 Vite 以 ESM 输出（可能包含 import chunk），因此这里显式使用 module SW
+    const reg = await navigator.serviceWorker.register(swUrl, { scope: extensionBase, type: 'module' });
     reg.update().catch(() => {});
     await waitForServiceWorkerActivated(reg);
     return reg;

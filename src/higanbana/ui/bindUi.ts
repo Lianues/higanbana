@@ -129,7 +129,8 @@ export function bindUi(): void {
 
       const root = document.getElementById('hb_projects_list');
       if (!root) return;
-      const esc = (globalThis as any).CSS?.escape ? (globalThis as any).CSS.escape(projectId) : projectId;
+      // 用于属性选择器的安全转义（id 目前是 uuid，但这里仍做最小转义避免引号/反斜杠破坏选择器）
+      const esc = String(projectId).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
       const titleEl = root.querySelector<HTMLInputElement>(`.hb-proj-title[data-project-id="${esc}"]`);
       const phEl = root.querySelector<HTMLInputElement>(`.hb-proj-placeholder[data-project-id="${esc}"]`);

@@ -2,7 +2,7 @@ import { getCardData } from '../card';
 import type { HiganbanaProject } from '../card';
 import { getActiveCharacter, getStContext } from '../st';
 import type { RenderTarget } from './embed';
-import { createEmbedNode, resolveProjectRenderTarget } from './embed';
+import { createEmbedNode, ensureProjectEmbedsUseBlob, resolveProjectRenderTarget } from './embed';
 import { renderHtmlCodeBlocksInMesText } from './htmlBlocks';
 
 function escapeRegExp(s: string): string {
@@ -89,6 +89,9 @@ export function replacePlaceholdersInMesText(mesTextEl: HTMLElement, messageId: 
           createEmbedNode(messageId, embedIndex++, target, {
             projectId: proj?.id,
             showTitleInChat: proj?.showTitleInChat,
+            // 项目渲染：统一使用 Blob URL（分配页面）
+            useBlobUrlInChat: true,
+            openInNewTabUrl: target.kind === 'iframe' ? target.src : undefined,
           }),
         );
       } else {
@@ -112,6 +115,7 @@ function processMessageById(messageId: any): void {
   if (!el) return;
   replacePlaceholdersInMesText(el, id);
   renderHtmlCodeBlocksInMesText(el, id);
+  ensureProjectEmbedsUseBlob();
 }
 
 export function processAllDisplayedMessages(): void {
@@ -125,6 +129,7 @@ export function processAllDisplayedMessages(): void {
     replacePlaceholdersInMesText(el, id);
     renderHtmlCodeBlocksInMesText(el, id);
   }
+  ensureProjectEmbedsUseBlob();
 }
 
 let processAllScheduled = false;

@@ -2,6 +2,7 @@ import { getSettings } from '../settings';
 import type { RenderTarget } from './embed';
 import { createEmbedNode } from './embed';
 import { installIframeAutoResize } from './iframeAutoResize';
+import { injectHbHtmlRuntime } from '../../hbHtmlRuntime';
 
 function isLikelyFrontendHtml(content: string): boolean {
   const s = String(content ?? '').toLowerCase();
@@ -28,7 +29,10 @@ function fnv1a32Hex(s: string): string {
 }
 
 function ensureHtmlBlobUrl(wrap: HTMLElement, html: string): string {
-  const normalized = normalizeHtmlDocument(html);
+  const normalized = injectHbHtmlRuntime(normalizeHtmlDocument(html), {
+    origin: window.location.origin,
+    forceBaseHref: true,
+  });
   const hash = fnv1a32Hex(normalized);
   const prevHash = String((wrap as any).dataset?.hbHtmlHash ?? '');
   const prevUrl = String((wrap as any).dataset?.hbHtmlBlobUrl ?? '');
@@ -123,16 +127,47 @@ export function renderHtmlCodeBlocksInMesText(mesTextEl: HTMLElement, messageId:
       }
     }
 
-    const url = needUrl ? ensureHtmlBlobUrl(wrap, content) : '';
+    // 仅在“以 Blob URL 渲染”开启时，才为 iframe 预先创建 blob 页面。
+    // 标题栏模式下“新标签页打开”可按需创建 blob（见下方 click handler）。
+    const url = useBlob ? ensureHtmlBlobUrl(wrap, content) : '';
 
     if (showTitleBar) {
-      const target: RenderTarget = { kind: 'iframe', src: url || 'about:blank', title: 'HTML 代码块' };
+      const injected = injectHbHtmlRuntime(normalizeHtmlDocument(content), {
+        origin: window.location.origin,
+        forceBaseHref: false,
+      });
+      const target: RenderTarget = { kind: 'iframe', src: useBlob && url ? url : 'about:blank', title: 'HTML 代码块' };
       const embed = createEmbedNode(messageId, embedIndex++, target, {
         showTitleInChat: true,
+        openInNewTabUrl: useBlob && url ? url : '#',
       });
       const old = wrap.querySelector('.hb-embed');
       if (old) old.remove();
       wrap.appendChild(embed);
+
+      // 标题栏 + 非 blob 模式：用 srcdoc 渲染，并在点击“新标签页打开”时再创建 blob 页面
+      if (!useBlob) {
+        const iframe = embed.querySelector('iframe.hb-iframe') as HTMLIFrameElement | null;
+        if (iframe) {
+          iframe.removeAttribute('src');
+          iframe.srcdoc = injected;
+        }
+
+        const link = embed.querySelector('.hb-embed-actions a') as HTMLAnchorElement | null;
+        if (link && String((link as any).dataset?.hbHtmlLazyOpenBound ?? '') !== '1') {
+          (link as any).dataset.hbHtmlLazyOpenBound = '1';
+          link.href = '#';
+          link.addEventListener('click', ev => {
+            try {
+              ev.preventDefault();
+              const u = ensureHtmlBlobUrl(wrap, content);
+              window.open(u, '_blank', 'noopener,noreferrer');
+            } catch {
+              // ignore
+            }
+          });
+        }
+      }
       continue;
     }
 
@@ -156,7 +191,10 @@ export function renderHtmlCodeBlocksInMesText(mesTextEl: HTMLElement, messageId:
       iframe.src = url;
     } else {
       iframe.removeAttribute('src');
-      iframe.srcdoc = normalizeHtmlDocument(content);
+      iframe.srcdoc = injectHbHtmlRuntime(normalizeHtmlDocument(content), {
+        origin: window.location.origin,
+        forceBaseHref: false,
+      });
     }
   }
 }

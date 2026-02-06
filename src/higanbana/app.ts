@@ -1,4 +1,5 @@
 import { refreshCachedProjects } from './cache';
+import { installHbHtmlBridge } from './htmlBridge';
 import { bindMessageHooks, processAllDisplayedMessages, scheduleProcessAllDisplayedMessages } from './render/placeholders';
 import { registerServiceWorker } from './swRegister';
 import { getStContext } from './st';
@@ -29,6 +30,9 @@ function bindCharacterHooks(): void {
 }
 
 async function init(): Promise<void> {
+  // 让任意 iframe / 新标签页里的 HTML 都能通过桥接访问 CSRF token / ST_API
+  installHbHtmlBridge();
+
   const reg = await registerServiceWorker();
   await refreshCachedProjects();
   await loadSettingsUi();
