@@ -1,35 +1,13 @@
-export type HbHtmlRuntimeInjectOptions = {
-  /**
-   * SillyTavern 的 origin（例如 http://127.0.0.1:8000）。
-   * - 普通页面可留空，运行时会从 location 推导
-   * - blob 页面建议传入，避免相对 URL 解析到 blob: scheme
-   */
-  origin?: string;
-  /**
-   * 是否强制注入/修复 <base href="...">。
-   * - blob 页面中 root-relative（/xxx）在部分浏览器/场景会被解析到 blob:，导致资源加载失败
-   * - VFS 页面（WebZip）不应开启，否则会破坏项目自身的相对资源路径
-   */
-  forceBaseHref?: boolean;
-};
-
-const MARKER = '/*__HB_HTML_COMPAT__*/';
-
-function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
-  const origin = String(opts.origin ?? '').trim();
-  const forceBaseHref = Boolean(opts.forceBaseHref);
-
-  // NOTE: 这里必须是纯字符串注入，不依赖任何构建时 import（要能在任意 HTML 中独立运行）
-  return `
-<script>${MARKER}
+const a="/*__HB_HTML_COMPAT__*/";function c(t){const r=String(t.origin??"").trim(),e=!!t.forceBaseHref;return`
+<script>${a}
 (() => {
   const G = globalThis;
   const KEY = '__HB_HTML_COMPAT_RUNTIME__';
   if (G[KEY]) return;
   G[KEY] = { v: 1 };
 
-  const FORCE_BASE = ${forceBaseHref ? 'true' : 'false'};
-  const INJECTED_ORIGIN = ${JSON.stringify(origin)};
+  const FORCE_BASE = ${e?"true":"false"};
+  const INJECTED_ORIGIN = ${JSON.stringify(r)};
 
   // 推导 SillyTavern origin（用于 blob/sandbox 场景的绝对 URL 构造）
   const deriveOrigin = () => {
@@ -91,7 +69,7 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
         clearTimeout(pending.timer);
 
         if (data.ok) {
-          pending.resolve(decodeRpcResult(data.result));
+          pending.resolve(data.result);
         } else {
           pending.reject(new Error(String(data.error || 'RPC 调用失败')));
         }
@@ -135,20 +113,6 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     });
   };
 
-  const decodeRpcResult = result => {
-    try {
-      if (!result || typeof result !== 'object') return result;
-      if ((result.__hb_rpc_function__ === true || result.__hb_rpc_object__ === true) && result.root) {
-        const root = String(result.root || '').trim();
-        const path = Array.isArray(result.path) ? result.path.map(x => String(x)) : [];
-        if (root) return createBridgeProxy(root, path);
-      }
-      return result;
-    } catch {
-      return result;
-    }
-  };
-
   const createBridgeProxy = (root, path = []) => {
     const fn = function () {};
     return new Proxy(fn, {
@@ -157,10 +121,7 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
         if (prop === Symbol.toStringTag) return 'HBBridgeProxy';
         if (prop === '__hbBridgeRoot') return root;
         if (prop === '__hbBridgePath') return path.slice();
-        if (prop === '__hbBridgeGet') return () => callBridgeRpc(root, path, []);
         if (prop === 'toJSON') return () => '[HBBridgeProxy ' + root + '.' + path.join('.') + ']';
-        if (prop === 'toString') return () => '[HBBridgeProxy ' + root + '.' + path.join('.') + ']';
-        if (prop === 'valueOf') return () => ({ __hbBridgeRoot: root, __hbBridgePath: path.slice() });
         if (typeof prop === 'symbol') return undefined;
         return createBridgeProxy(root, path.concat(String(prop)));
       },
@@ -168,50 +129,6 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
         return callBridgeRpc(root, path, args);
       },
     });
-  };
-
-  const defineBridgeGlobalGetter = key => {
-    const k = String(key || '').trim();
-    if (!k) return;
-    if (k === '__proto__' || k === 'prototype' || k === 'constructor') return;
-    if (k in G) return;
-
-    try {
-      Object.defineProperty(G, k, {
-        configurable: true,
-        enumerable: false,
-        get() {
-          return createBridgeProxy('__HB_GLOBAL__', [k]);
-        },
-      });
-    } catch {
-      // ignore
-    }
-  };
-
-  const installCoreBridgeGlobals = () => {
-    defineBridgeGlobalGetter('ST_API');
-    defineBridgeGlobalGetter('Higanbana');
-    defineBridgeGlobalGetter('higanbana');
-  };
-
-  const installBridgeGlobals = async () => {
-    // 先同步装核心入口，避免首帧访问 undefined。
-    installCoreBridgeGlobals();
-
-    try {
-      const keys = await callBridgeRpc('__HB_INTERNAL__', ['listGlobals'], []);
-      const rootProxy = createBridgeProxy('__HB_GLOBAL__');
-      G.__HB_TOP__ = rootProxy;
-
-      if (!Array.isArray(keys)) return;
-
-      for (const keyRaw of keys) {
-        defineBridgeGlobalGetter(keyRaw);
-      }
-    } catch {
-      // ignore
-    }
   };
 
   // ---- CSRF token：优先本页上下文获取，失败则走 /csrf-token ----
@@ -454,17 +371,19 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
 
   // ---- 透传主页面 API（通过插件内桥接 RPC，而非 opener 直连） ----
   try {
-    // 先为 SillyTavern 保留最小上下文兜底，同时附加桥接代理入口。
+    G.ST_API = createBridgeProxy('ST_API');
+
+    const hbProxy = createBridgeProxy('Higanbana');
+    G.Higanbana = hbProxy;
+    G.higanbana = hbProxy;
+
+    // 同时提供 SillyTavern RPC 代理（保留前面注入的最小 getContext 兜底）
     if (!G.SillyTavern || typeof G.SillyTavern !== 'object') {
       G.SillyTavern = {};
     }
     if (!G.SillyTavern.__hbBridgeProxy) {
       G.SillyTavern.__hbBridgeProxy = createBridgeProxy('SillyTavern');
     }
-
-    // 安装桥接全局（核心入口同步，其余全局异步按需透传）。
-    // 读取非函数值时可使用 window.xxx.__hbBridgeGet()
-    void installBridgeGlobals();
   } catch {
     // ignore
   }
@@ -505,30 +424,5 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     // ignore
   }
 })();
-</script>
-`;
-}
-
-export function injectHbHtmlRuntime(html: string, opts: HbHtmlRuntimeInjectOptions = {}): string {
-  const raw = String(html ?? '');
-  if (!raw.trim()) return raw;
-  if (raw.includes(MARKER)) return raw;
-
-  const injection = buildRuntimeScript(opts);
-
-  // 优先插入到 <head> 后（更早执行）
-  const headRe = /<head\\b[^>]*>/i;
-  if (headRe.test(raw)) {
-    return raw.replace(headRe, m => m + injection);
-  }
-
-  // 没有 head：插入到 <html> 后并补 head（尽量不改变 body 内容）
-  const htmlRe = /<html\\b[^>]*>/i;
-  if (htmlRe.test(raw)) {
-    return raw.replace(htmlRe, m => m + `<head>${injection}</head>`);
-  }
-
-  // Fragment/非完整文档：直接前置（浏览器会把它当作 head 内容解析）
-  return injection + raw;
-}
-
+<\/script>
+`}function h(t,r={}){const e=String(t??"");if(!e.trim()||e.includes(a))return e;const n=c(r),o=/<head\\b[^>]*>/i;if(o.test(e))return e.replace(o,i=>i+n);const s=/<html\\b[^>]*>/i;return s.test(e)?e.replace(s,i=>i+`<head>${n}</head>`):n+e}export{h as i};

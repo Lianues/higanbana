@@ -93,6 +93,12 @@ export async function importProjectsToCacheWithPopupQueue(
       await refreshCachedProjects();
 
       const current = getCardData(activeNow.character);
+      const hasTarget = current.projects.some(p => p.id === proj.id);
+      if (!hasTarget) {
+        console.warn('[Higanbana] skip card write: target project not found in latest card state', { chid, projectId: proj.id });
+        // eslint-disable-next-line no-continue
+        continue;
+      }
       const nextProjects = current.projects.map(p =>
         p.id === proj.id ? { ...p, zipSha256: imported.projectId, homePage: imported.homePage } : p,
       );
@@ -187,6 +193,12 @@ export async function importProjectsToCacheWithPopupQueue(
             await refreshCachedProjects();
 
             const current = getCardData(activeNow.character);
+            const hasTarget = current.projects.some(p => p.id === proj.id);
+            if (!hasTarget) {
+              console.warn('[Higanbana] skip card write: target project not found in latest card state', { chid, projectId: proj.id });
+              // eslint-disable-next-line no-continue
+              continue;
+            }
             const nextProjects = current.projects.map(p =>
               p.id === proj.id ? { ...p, zipSha256: imported.projectId, homePage: imported.homePage } : p,
             );

@@ -1,6 +1,6 @@
 # Higanbana API 接口说明（CRUD）
 
-> 适用范围：由彼岸花渲染的 WebZip 页面（`/vfs/<zipSha256>/...`）或被彼岸花注入运行时的页面。
+> 适用范围：由彼岸花渲染的 WebZip 页面（`/vfs/<zipSha256>/...`）及其同源子页面（运行时会直连复用上层同源全局）。
 
 ---
 
@@ -14,6 +14,20 @@
 - `window.Higanbana.deleteProject(payload?)`     （Delete）
 
 同样也可用小写别名对象：`window.higanbana.xxx(...)`。
+
+另外在主页面会直接注册全局：
+
+- `window.Higanbana`
+- `window.higanbana`
+- `SillyTavern.libs.higanbana`
+
+这样在酒馆主页面脚本里可以统一直接调用，不需要区分入口。
+
+运行模型说明：
+
+- 当前为**纯同源直连模型**。
+- 运行时会直接复用 `parent/top/opener` 的同源全局对象（`SillyTavern` / `ST_API` / `Higanbana`）。
+- 不再依赖 `postMessage/BroadcastChannel` 的旧桥接通道。
 
 ---
 

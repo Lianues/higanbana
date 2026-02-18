@@ -90,6 +90,7 @@ export function createEmbedNode(
     const link = document.createElement('a');
     link.href = opts.openInNewTabUrl || target.src;
     link.target = '_blank';
+    // 走插件内桥接通道，不依赖 opener 直连；这里恢复安全策略。
     link.rel = 'noopener noreferrer';
     link.textContent = '新标签页打开';
     right.appendChild(link);
@@ -122,9 +123,10 @@ export function createEmbedNode(
   //（例如在面板里开关“Blob 分配页面”）
   const useBlob = Boolean(opts.projectId) || opts.useBlobUrlInChat === true;
   try {
-    (iframe as any).dataset = (iframe as any).dataset || {};
-    (iframe as any).dataset.hbVfsHomeUrl = target.src;
-    (iframe as any).dataset.hbUseBlobUrl = useBlob ? '1' : '0';
+    if ((iframe as any).dataset) (iframe as any).dataset.hbVfsHomeUrl = target.src;
+    else iframe.setAttribute('data-hb-vfs-home-url', target.src);
+    if ((iframe as any).dataset) (iframe as any).dataset.hbUseBlobUrl = useBlob ? '1' : '0';
+    else iframe.setAttribute('data-hb-use-blob-url', useBlob ? '1' : '0');
   } catch {
     //
   }
@@ -173,11 +175,36 @@ function buildProjectBlobWrapperHtml(vfsHomeUrl: string): string {
       const VFS_URL = ${safeUrl};
       const inner = document.getElementById('inner');
       const loading = document.getElementById('loading');
+      const OUTER_TYPE = 'HB_IFRAME_HEIGHT';
+      const iframeName = String(window.name || '');
       const clamp = (h) => Math.max(80, Math.min(Number(h) || 0, 10000));
       const setHeight = (h) => {
         const px = clamp(h);
         if (!px) return;
         inner.style.height = px + 'px';
+        try {
+          if (iframeName) {
+            window.parent?.postMessage?.({ type: OUTER_TYPE, iframeName, height: px }, '*');
+          }
+        } catch {}
+      };
+
+      const measureInnerDocHeight = () => {
+        try {
+          const doc = inner.contentDocument;
+          if (!doc) return 0;
+          const body = doc.body;
+          const html = doc.documentElement;
+          if (!body || !html) return 0;
+          const h = Math.max(body.scrollHeight || 0, html.scrollHeight || 0, body.offsetHeight || 0, html.offsetHeight || 0);
+          return Number.isFinite(h) ? h : 0;
+        } catch {
+          return 0;
+        }
+      };
+      const syncHeightFromInnerDirect = () => {
+        const h = measureInnerDocHeight();
+        if (h > 0) setHeight(h);
       };
 
       try { inner.name = String(window.name || ''); } catch {}
@@ -185,33 +212,36 @@ function buildProjectBlobWrapperHtml(vfsHomeUrl: string): string {
 
       inner.addEventListener('load', () => {
         try { if (loading) loading.style.display = 'none'; } catch {}
+        // 直接测高兜底（同源场景），避免仅依赖 postMessage
+        syncHeightFromInnerDirect();
+        setTimeout(syncHeightFromInnerDirect, 80);
+        setTimeout(syncHeightFromInnerDirect, 260);
+
+        try {
+          const doc = inner.contentDocument;
+          if (doc?.documentElement && 'ResizeObserver' in window) {
+            const ro = new ResizeObserver(() => syncHeightFromInnerDirect());
+            ro.observe(doc.documentElement);
+            if (doc.body) ro.observe(doc.body);
+          }
+        } catch {}
       });
 
       window.addEventListener('message', (ev) => {
         const data = ev && ev.data;
         if (!data || typeof data !== 'object') return;
 
-        // Height message from inner
+        // Height message from inner（跨域/无法直读时也能工作）
         if (ev.source === inner.contentWindow && data.type === 'HB_IFRAME_HEIGHT') {
           setHeight(data.height);
           return;
         }
-
-        // Bridge messages between inner <-> parent (for ST_API / CSRF proxy)
-        if (data.__hb === 'higanbana' && data.v === 1) {
-          try {
-            if (ev.source === inner.contentWindow) {
-              window.parent && window.parent.postMessage(data, '*');
-              return;
-            }
-            if (ev.source === window.parent) {
-              inner.contentWindow && inner.contentWindow.postMessage(data, '*');
-            }
-          } catch {
-            // ignore
-          }
-        }
       });
+
+      // 轮询兜底：应对某些页面不触发 ResizeObserver/不主动 postMessage
+      setInterval(() => {
+        syncHeightFromInnerDirect();
+      }, 500);
     </script>
   </body>
 </html>`;
@@ -223,14 +253,12 @@ async function getProjectHomeBlobUrl(vfsHomeUrl: string): Promise<string> {
   const cached = projectHomeBlobCache.get(key);
   if (cached) return await cached.promise;
 
-  const entry: BlobCacheEntry = {
-    promise: (async () => {
-      const html = buildProjectBlobWrapperHtml(key);
-      const blobUrl = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-      entry.url = blobUrl;
-      return blobUrl;
-    })(),
-  };
+  const promise = (async () => {
+    const html = buildProjectBlobWrapperHtml(key);
+    const blobUrl = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    return blobUrl;
+  })();
+  const entry: BlobCacheEntry = { promise };
   projectHomeBlobCache.set(key, entry);
   return await entry.promise;
 }
@@ -239,9 +267,10 @@ async function applyProjectBlobUrlToIframe(iframe: HTMLIFrameElement, vfsHomeUrl
   try {
     const expected = String(vfsHomeUrl ?? '').trim();
     if (!expected) return;
-    (iframe as any).dataset = (iframe as any).dataset || {};
-    (iframe as any).dataset.hbVfsHomeUrl = expected;
-    (iframe as any).dataset.hbUseBlobUrl = '1';
+    if ((iframe as any).dataset) (iframe as any).dataset.hbVfsHomeUrl = expected;
+    else iframe.setAttribute('data-hb-vfs-home-url', expected);
+    if ((iframe as any).dataset) (iframe as any).dataset.hbUseBlobUrl = '1';
+    else iframe.setAttribute('data-hb-use-blob-url', '1');
 
     const blobUrl = await getProjectHomeBlobUrl(expected);
     // 期间可能被移除/切换项目/关闭 blob 模式

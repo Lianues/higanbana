@@ -1,35 +1,14 @@
-export type HbHtmlRuntimeInjectOptions = {
-  /**
-   * SillyTavern 的 origin（例如 http://127.0.0.1:8000）。
-   * - 普通页面可留空，运行时会从 location 推导
-   * - blob 页面建议传入，避免相对 URL 解析到 blob: scheme
-   */
-  origin?: string;
-  /**
-   * 是否强制注入/修复 <base href="...">。
-   * - blob 页面中 root-relative（/xxx）在部分浏览器/场景会被解析到 blob:，导致资源加载失败
-   * - VFS 页面（WebZip）不应开启，否则会破坏项目自身的相对资源路径
-   */
-  forceBaseHref?: boolean;
-};
-
-const MARKER = '/*__HB_HTML_COMPAT__*/';
-
-function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
-  const origin = String(opts.origin ?? '').trim();
-  const forceBaseHref = Boolean(opts.forceBaseHref);
-
-  // NOTE: 这里必须是纯字符串注入，不依赖任何构建时 import（要能在任意 HTML 中独立运行）
-  return `
-<script>${MARKER}
+const c="hb_higanbana_html_bridge_v1",s="/*__HB_HTML_COMPAT__*/";function l(t){const r=String(t.origin??"").trim(),e=!!t.forceBaseHref;return`
+<script>${s}
 (() => {
   const G = globalThis;
   const KEY = '__HB_HTML_COMPAT_RUNTIME__';
   if (G[KEY]) return;
   G[KEY] = { v: 1 };
 
-  const FORCE_BASE = ${forceBaseHref ? 'true' : 'false'};
-  const INJECTED_ORIGIN = ${JSON.stringify(origin)};
+  const CHANNEL = ${JSON.stringify(c)};
+  const FORCE_BASE = ${e?"true":"false"};
+  const INJECTED_ORIGIN = ${JSON.stringify(r)};
 
   // 推导 SillyTavern origin（用于 blob/sandbox 场景的绝对 URL 构造）
   const deriveOrigin = () => {
@@ -64,157 +43,79 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     }
   }
 
-  // ---- 插件内桥接通道（BroadcastChannel RPC） ----
-  const HB_RPC_CHANNEL = 'hb_higanbana_rpc_v1';
-  const HB_RPC_REQ = 'HB_BRIDGE_RPC_REQ';
-  const HB_RPC_RES = 'HB_BRIDGE_RPC_RES';
-  const HB_RPC_CLIENT_ID = 'hb-client-' + Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
-  const HB_RPC_TIMEOUT_MS = 10000;
-  let hbRpcSeq = 0;
-  const hbRpcPending = new Map();
-  let hbRpcChannel = null;
-  let hbRpcUnavailable = false;
-
-  const ensureRpcChannel = () => {
-    if (hbRpcUnavailable) return null;
-    if (hbRpcChannel) return hbRpcChannel;
+  // ---- 轻量 RPC（用于 ST_API 代理 / CSRF 兜底） ----
+  const ctxId = (() => {
     try {
-      const ch = new BroadcastChannel(HB_RPC_CHANNEL);
-      ch.addEventListener('message', ev => {
-        const data = ev && ev.data;
-        if (!data || data.type !== HB_RPC_RES) return;
-        if (String(data.clientId || '') !== HB_RPC_CLIENT_ID) return;
-        const id = String(data.id || '');
-        const pending = hbRpcPending.get(id);
-        if (!pending) return;
-        hbRpcPending.delete(id);
-        clearTimeout(pending.timer);
-
-        if (data.ok) {
-          pending.resolve(decodeRpcResult(data.result));
-        } else {
-          pending.reject(new Error(String(data.error || 'RPC 调用失败')));
-        }
-      });
-      hbRpcChannel = ch;
-      return ch;
+      return 'hb_' + Math.random().toString(36).slice(2) + '_' + Date.now().toString(36);
     } catch {
-      hbRpcUnavailable = true;
-      return null;
+      return 'hb_' + Date.now();
     }
+  })();
+  let seq = 0;
+  const pending = new Map();
+
+  const canPostToParent = (() => {
+    try {
+      return !!(window.parent && window.parent !== window && window.parent.postMessage);
+    } catch {
+      return false;
+    }
+  })();
+  const canPostToOpener = (() => {
+    try {
+      return !!(window.opener && window.opener.postMessage);
+    } catch {
+      return false;
+    }
+  })();
+
+  let bc = null;
+  try {
+    if ('BroadcastChannel' in G) bc = new BroadcastChannel(CHANNEL);
+  } catch {
+    bc = null;
+  }
+
+  const send = (msg) => {
+    try { bc && bc.postMessage(msg); } catch {}
+    try { if (canPostToParent) window.parent.postMessage(msg, '*'); } catch {}
+    try { if (canPostToOpener) window.opener.postMessage(msg, '*'); } catch {}
   };
 
-  const callBridgeRpc = (root, path, args) => {
-    const ch = ensureRpcChannel();
-    if (!ch) {
-      return Promise.reject(new Error('RPC 桥接通道不可用'));
-    }
+  const onData = (data) => {
+    if (!data || typeof data !== 'object') return;
+    if (data.__hb !== 'higanbana' || data.v !== 1 || data.kind !== 'res') return;
+    const id = String(data.id || '');
+    const p = pending.get(id);
+    if (!p) return;
+    pending.delete(id);
+    if (data.ok) p.resolve(data.data);
+    else p.reject(new Error(String(data.error || 'HB bridge error')));
+  };
 
-    const id = HB_RPC_CLIENT_ID + ':' + String(++hbRpcSeq);
+  try { bc && (bc.onmessage = (ev) => onData(ev.data)); } catch {}
+  try { window.addEventListener('message', (ev) => onData(ev.data)); } catch {}
+
+  const rpc = (op, payload, timeoutMs = 120000) => {
+    if (!bc && !canPostToParent && !canPostToOpener) {
+      return Promise.reject(new Error('HB bridge unavailable'));
+    }
+    const id = ctxId + ':' + String(++seq);
+    const msg = { __hb: 'higanbana', v: 1, kind: 'req', id, op, payload };
+    send(msg);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        hbRpcPending.delete(id);
-        reject(new Error('RPC 调用超时'));
-      }, HB_RPC_TIMEOUT_MS);
-
-      hbRpcPending.set(id, { resolve, reject, timer });
-      try {
-        ch.postMessage({
-          type: HB_RPC_REQ,
-          id,
-          clientId: HB_RPC_CLIENT_ID,
-          root,
-          path: Array.isArray(path) ? path : [],
-          args: Array.isArray(args) ? args : [],
-        });
-      } catch (err) {
-        hbRpcPending.delete(id);
-        clearTimeout(timer);
-        reject(err);
-      }
-    });
-  };
-
-  const decodeRpcResult = result => {
-    try {
-      if (!result || typeof result !== 'object') return result;
-      if ((result.__hb_rpc_function__ === true || result.__hb_rpc_object__ === true) && result.root) {
-        const root = String(result.root || '').trim();
-        const path = Array.isArray(result.path) ? result.path.map(x => String(x)) : [];
-        if (root) return createBridgeProxy(root, path);
-      }
-      return result;
-    } catch {
-      return result;
-    }
-  };
-
-  const createBridgeProxy = (root, path = []) => {
-    const fn = function () {};
-    return new Proxy(fn, {
-      get(_t, prop) {
-        if (prop === 'then') return undefined;
-        if (prop === Symbol.toStringTag) return 'HBBridgeProxy';
-        if (prop === '__hbBridgeRoot') return root;
-        if (prop === '__hbBridgePath') return path.slice();
-        if (prop === '__hbBridgeGet') return () => callBridgeRpc(root, path, []);
-        if (prop === 'toJSON') return () => '[HBBridgeProxy ' + root + '.' + path.join('.') + ']';
-        if (prop === 'toString') return () => '[HBBridgeProxy ' + root + '.' + path.join('.') + ']';
-        if (prop === 'valueOf') return () => ({ __hbBridgeRoot: root, __hbBridgePath: path.slice() });
-        if (typeof prop === 'symbol') return undefined;
-        return createBridgeProxy(root, path.concat(String(prop)));
-      },
-      apply(_t, _thisArg, args) {
-        return callBridgeRpc(root, path, args);
-      },
-    });
-  };
-
-  const defineBridgeGlobalGetter = key => {
-    const k = String(key || '').trim();
-    if (!k) return;
-    if (k === '__proto__' || k === 'prototype' || k === 'constructor') return;
-    if (k in G) return;
-
-    try {
-      Object.defineProperty(G, k, {
-        configurable: true,
-        enumerable: false,
-        get() {
-          return createBridgeProxy('__HB_GLOBAL__', [k]);
-        },
+        pending.delete(id);
+        reject(new Error('HB bridge timeout: ' + op));
+      }, Math.max(1000, Number(timeoutMs || 0)));
+      pending.set(id, {
+        resolve: (x) => { clearTimeout(timer); resolve(x); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
       });
-    } catch {
-      // ignore
-    }
+    });
   };
 
-  const installCoreBridgeGlobals = () => {
-    defineBridgeGlobalGetter('ST_API');
-    defineBridgeGlobalGetter('Higanbana');
-    defineBridgeGlobalGetter('higanbana');
-  };
-
-  const installBridgeGlobals = async () => {
-    // 先同步装核心入口，避免首帧访问 undefined。
-    installCoreBridgeGlobals();
-
-    try {
-      const keys = await callBridgeRpc('__HB_INTERNAL__', ['listGlobals'], []);
-      const rootProxy = createBridgeProxy('__HB_GLOBAL__');
-      G.__HB_TOP__ = rootProxy;
-
-      if (!Array.isArray(keys)) return;
-
-      for (const keyRaw of keys) {
-        defineBridgeGlobalGetter(keyRaw);
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  // ---- CSRF token：优先本页上下文获取，失败则走 /csrf-token ----
+  // ---- CSRF token：优先 RPC（主页面可直接读 token），失败则走 /csrf-token ----
   const rawFetch = typeof G.fetch === 'function' ? G.fetch.bind(G) : null;
   let csrfToken = '';
   let csrfPromise = null;
@@ -247,20 +148,32 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     if (csrfToken) return csrfToken;
     if (csrfPromise) return csrfPromise;
     csrfPromise = (async () => {
-      // 1) 本页上下文
+      // 1) 试图从主页面直接拿（最稳）
+      try {
+        const fromBridge = await rpc('getCsrfToken', {}, 8000);
+        const t1 = typeof fromBridge === 'string' ? fromBridge : '';
+        if (t1) {
+          csrfToken = t1;
+          return csrfToken;
+        }
+      } catch {
+        // ignore
+      }
+
+      // 2) 本页若恰好有 SillyTavern 上下文，也可直接读
       try {
         const ctx = G.SillyTavern && typeof G.SillyTavern.getContext === 'function' ? G.SillyTavern.getContext() : null;
         const h = ctx && typeof ctx.getRequestHeaders === 'function' ? ctx.getRequestHeaders() : null;
         const t2 = extractTokenFromHeadersObj(h);
         if (t2) {
           csrfToken = t2;
-          return t2;
+          return csrfToken;
         }
       } catch {
         // ignore
       }
 
-      // 2) fallback：/csrf-token
+      // 3) 最后 fallback：/csrf-token
       try {
         const t3 = await fetchCsrfToken();
         if (t3) csrfToken = t3;
@@ -452,21 +365,83 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     // ignore
   }
 
-  // ---- 透传主页面 API（通过插件内桥接 RPC，而非 opener 直连） ----
+  // ---- 提供 ST_API 代理（没有 ST_API 时通过桥接调用主页面 ST_API） ----
   try {
-    // 先为 SillyTavern 保留最小上下文兜底，同时附加桥接代理入口。
-    if (!G.SillyTavern || typeof G.SillyTavern !== 'object') {
-      G.SillyTavern = {};
+    if (!G.ST_API) {
+      const call = async (endpoint, params) => {
+        return await rpc('callSTAPI', { endpoint, params: params || {} }, 120000);
+      };
+      G.ST_API = new Proxy({}, {
+        get(_t, ns) {
+          return new Proxy({}, {
+            get(_t2, method) {
+              return (params) => call(String(ns) + '.' + String(method), params || {});
+            },
+          });
+        },
+      });
     }
-    if (!G.SillyTavern.__hbBridgeProxy) {
-      G.SillyTavern.__hbBridgeProxy = createBridgeProxy('SillyTavern');
-    }
-
-    // 安装桥接全局（核心入口同步，其余全局异步按需透传）。
-    // 读取非函数值时可使用 window.xxx.__hbBridgeGet()
-    void installBridgeGlobals();
   } catch {
     // ignore
+  }
+
+  // ---- 提供 Higanbana 项目管理 API ----
+  try {
+    const parseCurrentZipSha256 = () => {
+        const m = String(location.pathname || '').match(/\\/vfs\\/([^/]+)\\//);
+        return m && m[1] ? decodeURIComponent(m[1]) : '';
+      } catch (e) { return ''; }
+    };
+    const toBuf = async (v) => {
+      if (!v) return null;
+      if (v instanceof ArrayBuffer) return v.slice(0);
+      if (ArrayBuffer.isView(v)) return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
+      if (v instanceof Blob) return await v.arrayBuffer();
+      return null;
+    };
+    const withTarget = (p) => {
+      if (!p.targetProjectId && !p.targetZipSha256) {
+        const s = parseCurrentZipSha256();
+        if (s) p.targetZipSha256 = s;
+      }
+      return p;
+    };
+    const withZip = async (p) => {
+      if (!p.zipArrayBuffer && p.zipBlob) {
+        p.zipArrayBuffer = await toBuf(p.zipBlob);
+        try { delete p.zipBlob; } catch(e){}
+      } else if (p.zipArrayBuffer) {
+        p.zipArrayBuffer = await toBuf(p.zipArrayBuffer);
+      }
+      return p;
+    };
+
+    const Higanbana = {
+      getProject: (p) => rpc('getProject', withTarget(Object.assign({}, p))),
+      createProject: async (p) => rpc('createProject', await withZip(Object.assign({}, p))),
+      updateProject: async (p) => {
+        const payload = withTarget(await withZip(Object.assign({}, p)));
+        if (payload.__hbAllowBroadcastZipTarget === undefined) {
+          payload.__hbAllowBroadcastZipTarget = !canPostToParent && !canPostToOpener;
+        }
+        return rpc('updateProject', payload);
+      },
+      deleteProject: (p) => {
+        const payload = withTarget(Object.assign({}, p));
+        if (payload.__hbAllowBroadcastZipTarget === undefined) {
+          payload.__hbAllowBroadcastZipTarget = !canPostToParent && !canPostToOpener;
+        }
+        return rpc('deleteProject', payload);
+      }
+    };
+
+    G.Higanbana = Higanbana;
+    G.higanbana = Higanbana;
+    G.__HB_HIGANBANA_API_READY__ = true;
+  } catch (e) {
+    G.__HB_HIGANBANA_API_READY__ = false;
+    G.__HB_HIGANBANA_API_ERROR__ = String(e);
+    console.warn('[Higanbana] expose API failed', e);
   }
 
   // ---- 跨域/无法测高时：向父页面上报 iframe 高度（父页面需监听 HB_IFRAME_HEIGHT） ----
@@ -505,30 +480,5 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     // ignore
   }
 })();
-</script>
-`;
-}
-
-export function injectHbHtmlRuntime(html: string, opts: HbHtmlRuntimeInjectOptions = {}): string {
-  const raw = String(html ?? '');
-  if (!raw.trim()) return raw;
-  if (raw.includes(MARKER)) return raw;
-
-  const injection = buildRuntimeScript(opts);
-
-  // 优先插入到 <head> 后（更早执行）
-  const headRe = /<head\\b[^>]*>/i;
-  if (headRe.test(raw)) {
-    return raw.replace(headRe, m => m + injection);
-  }
-
-  // 没有 head：插入到 <html> 后并补 head（尽量不改变 body 内容）
-  const htmlRe = /<html\\b[^>]*>/i;
-  if (htmlRe.test(raw)) {
-    return raw.replace(htmlRe, m => m + `<head>${injection}</head>`);
-  }
-
-  // Fragment/非完整文档：直接前置（浏览器会把它当作 head 内容解析）
-  return injection + raw;
-}
-
+<\/script>
+`}function d(t,r={}){const e=String(t??"");if(!e.trim()||e.includes(s))return e;const n=l(r),o=/<head\b[^>]*>/i;if(o.test(e))return e.replace(o,a=>a+n);const i=/<html\b[^>]*>/i;return i.test(e)?e.replace(i,a=>a+`<head>${n}</head>`):n+e}export{c as H,d as i};

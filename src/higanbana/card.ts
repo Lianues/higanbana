@@ -34,6 +34,14 @@ export type HiganbanaCardData = {
   projects: HiganbanaProject[];
 };
 
+function cloneCardData(data: HiganbanaCardData | null | undefined): HiganbanaCardData | null {
+  if (!data) return null;
+  const projects = Array.isArray(data.projects) ? data.projects : [];
+  return {
+    projects: projects.map(p => ({ ...(p as any) })) as any,
+  };
+}
+
 export function getCardData(character: any): HiganbanaCardData {
   const empty: HiganbanaCardData = { projects: [] };
   const raw = character?.data?.extensions?.higanbana;
@@ -117,6 +125,29 @@ export async function writeCardData(chid: number, data: HiganbanaCardData | null
   if (!ctx?.writeExtensionField) {
     throw new Error('writeExtensionField 不可用（酒馆版本过旧或上下文缺失）');
   }
-  await ctx.writeExtensionField(chid, 'higanbana', data);
-}
 
+  // 兼容：SillyTavern 后端 merge-attributes 使用 deepMerge，
+  // 当旧值为 null、而新值为 object 时可能出现“合并成空对象 {}”的问题。
+  // 因此这里永远写对象结构，不写 null。
+  const requestedData = cloneCardData(data);
+  const effectiveData: HiganbanaCardData = requestedData ?? { projects: [] };
+
+  await ctx.writeExtensionField(chid, 'higanbana', effectiveData);
+
+  // 与本地内存角色对象保持同步。
+  try {
+    const c = ctx?.characters?.[Number(chid)];
+    if (!c || typeof c !== 'object') return;
+
+    if (!c.data || typeof c.data !== 'object') c.data = {};
+    if (!c.data.extensions || typeof c.data.extensions !== 'object') c.data.extensions = {};
+
+    const projects = Array.isArray(effectiveData.projects) ? effectiveData.projects : [];
+    const normalized: HiganbanaCardData = {
+      projects: projects.map(p => ({ ...(p as any) })) as any,
+    };
+    c.data.extensions.higanbana = normalized;
+  } catch {
+    // ignore
+  }
+}

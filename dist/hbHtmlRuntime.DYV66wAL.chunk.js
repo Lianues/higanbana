@@ -1,35 +1,13 @@
-export type HbHtmlRuntimeInjectOptions = {
-  /**
-   * SillyTavern 的 origin（例如 http://127.0.0.1:8000）。
-   * - 普通页面可留空，运行时会从 location 推导
-   * - blob 页面建议传入，避免相对 URL 解析到 blob: scheme
-   */
-  origin?: string;
-  /**
-   * 是否强制注入/修复 <base href="...">。
-   * - blob 页面中 root-relative（/xxx）在部分浏览器/场景会被解析到 blob:，导致资源加载失败
-   * - VFS 页面（WebZip）不应开启，否则会破坏项目自身的相对资源路径
-   */
-  forceBaseHref?: boolean;
-};
-
-const MARKER = '/*__HB_HTML_COMPAT__*/';
-
-function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
-  const origin = String(opts.origin ?? '').trim();
-  const forceBaseHref = Boolean(opts.forceBaseHref);
-
-  // NOTE: 这里必须是纯字符串注入，不依赖任何构建时 import（要能在任意 HTML 中独立运行）
-  return `
-<script>${MARKER}
+const a="/*__HB_HTML_COMPAT__*/";function c(t){const r=String(t.origin??"").trim(),e=!!t.forceBaseHref;return`
+<script>${a}
 (() => {
   const G = globalThis;
   const KEY = '__HB_HTML_COMPAT_RUNTIME__';
   if (G[KEY]) return;
   G[KEY] = { v: 1 };
 
-  const FORCE_BASE = ${forceBaseHref ? 'true' : 'false'};
-  const INJECTED_ORIGIN = ${JSON.stringify(origin)};
+  const FORCE_BASE = ${e?"true":"false"};
+  const INJECTED_ORIGIN = ${JSON.stringify(r)};
 
   // 推导 SillyTavern origin（用于 blob/sandbox 场景的绝对 URL 构造）
   const deriveOrigin = () => {
@@ -170,44 +148,31 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     });
   };
 
-  const defineBridgeGlobalGetter = key => {
-    const k = String(key || '').trim();
-    if (!k) return;
-    if (k === '__proto__' || k === 'prototype' || k === 'constructor') return;
-    if (k in G) return;
-
-    try {
-      Object.defineProperty(G, k, {
-        configurable: true,
-        enumerable: false,
-        get() {
-          return createBridgeProxy('__HB_GLOBAL__', [k]);
-        },
-      });
-    } catch {
-      // ignore
-    }
-  };
-
-  const installCoreBridgeGlobals = () => {
-    defineBridgeGlobalGetter('ST_API');
-    defineBridgeGlobalGetter('Higanbana');
-    defineBridgeGlobalGetter('higanbana');
-  };
-
   const installBridgeGlobals = async () => {
-    // 先同步装核心入口，避免首帧访问 undefined。
-    installCoreBridgeGlobals();
-
     try {
       const keys = await callBridgeRpc('__HB_INTERNAL__', ['listGlobals'], []);
+      if (!Array.isArray(keys)) return;
+
       const rootProxy = createBridgeProxy('__HB_GLOBAL__');
       G.__HB_TOP__ = rootProxy;
 
-      if (!Array.isArray(keys)) return;
-
       for (const keyRaw of keys) {
-        defineBridgeGlobalGetter(keyRaw);
+        const key = String(keyRaw || '').trim();
+        if (!key) continue;
+        if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue;
+        if (key in G) continue;
+
+        try {
+          Object.defineProperty(G, key, {
+            configurable: true,
+            enumerable: false,
+            get() {
+              return createBridgeProxy('__HB_GLOBAL__', [key]);
+            },
+          });
+        } catch {
+          // ignore
+        }
       }
     } catch {
       // ignore
@@ -454,7 +419,13 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
 
   // ---- 透传主页面 API（通过插件内桥接 RPC，而非 opener 直连） ----
   try {
-    // 先为 SillyTavern 保留最小上下文兜底，同时附加桥接代理入口。
+    G.ST_API = createBridgeProxy('ST_API');
+
+    const hbProxy = createBridgeProxy('Higanbana');
+    G.Higanbana = hbProxy;
+    G.higanbana = hbProxy;
+
+    // 同时提供 SillyTavern RPC 代理（保留前面注入的最小 getContext 兜底）
     if (!G.SillyTavern || typeof G.SillyTavern !== 'object') {
       G.SillyTavern = {};
     }
@@ -462,8 +433,8 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
       G.SillyTavern.__hbBridgeProxy = createBridgeProxy('SillyTavern');
     }
 
-    // 安装桥接全局（核心入口同步，其余全局异步按需透传）。
-    // 读取非函数值时可使用 window.xxx.__hbBridgeGet()
+    // 扩展：不仅注入固定 API，也把主页面全局对象按需透传到当前 window。
+    // 注意：这是异步安装；如需读取非函数值，请使用 window.xxx.__hbBridgeGet()
     void installBridgeGlobals();
   } catch {
     // ignore
@@ -505,30 +476,5 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     // ignore
   }
 })();
-</script>
-`;
-}
-
-export function injectHbHtmlRuntime(html: string, opts: HbHtmlRuntimeInjectOptions = {}): string {
-  const raw = String(html ?? '');
-  if (!raw.trim()) return raw;
-  if (raw.includes(MARKER)) return raw;
-
-  const injection = buildRuntimeScript(opts);
-
-  // 优先插入到 <head> 后（更早执行）
-  const headRe = /<head\\b[^>]*>/i;
-  if (headRe.test(raw)) {
-    return raw.replace(headRe, m => m + injection);
-  }
-
-  // 没有 head：插入到 <html> 后并补 head（尽量不改变 body 内容）
-  const htmlRe = /<html\\b[^>]*>/i;
-  if (htmlRe.test(raw)) {
-    return raw.replace(htmlRe, m => m + `<head>${injection}</head>`);
-  }
-
-  // Fragment/非完整文档：直接前置（浏览器会把它当作 head 内容解析）
-  return injection + raw;
-}
-
+<\/script>
+`}function l(t,r={}){const e=String(t??"");if(!e.trim()||e.includes(a))return e;const n=c(r),i=/<head\\b[^>]*>/i;if(i.test(e))return e.replace(i,o=>o+n);const s=/<html\\b[^>]*>/i;return s.test(e)?e.replace(s,o=>o+`<head>${n}</head>`):n+e}export{l as i};

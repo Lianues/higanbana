@@ -1,5 +1,4 @@
 import { refreshCachedProjects } from './cache';
-import { installHbHtmlBridge } from './htmlBridge';
 import { bindMessageHooks, processAllDisplayedMessages, scheduleProcessAllDisplayedMessages } from './render/placeholders';
 import { registerServiceWorker } from './swRegister';
 import { getStContext } from './st';
@@ -7,8 +6,11 @@ import { bindUi } from './ui/bindUi';
 import { loadSettingsUi, refreshCharacterUi, refreshUi } from './ui/panel';
 import { setStatus } from './ui/status';
 import { checkCharWebzipOnChatChanged } from './popup/missingProjects';
+import { registerGlobalApi } from './globalApi';
+import { installRpcBridgeHost } from './bridge/rpcHost';
 
 let characterHooksBound = false;
+
 function bindCharacterHooks(): void {
   if (characterHooksBound) return;
   const ctx = getStContext();
@@ -30,8 +32,9 @@ function bindCharacterHooks(): void {
 }
 
 async function init(): Promise<void> {
-  // 让任意 iframe / 新标签页里的 HTML 都能通过桥接访问 CSRF token / ST_API
-  installHbHtmlBridge();
+  // 再次确保主页面全局 API 与 SillyTavern.libs 已同步
+  registerGlobalApi();
+  installRpcBridgeHost();
 
   const reg = await registerServiceWorker();
   await refreshCachedProjects();
@@ -64,10 +67,12 @@ function bootstrapOnce(): boolean {
 
 export function start(): void {
   jQuery(() => {
+    // 尽早挂全局 API（即使 APP_READY 尚未触发）
+    registerGlobalApi();
+    installRpcBridgeHost();
     if (bootstrapOnce()) return;
     const timer = setInterval(() => {
       if (bootstrapOnce()) clearInterval(timer);
     }, 250);
   });
 }
-

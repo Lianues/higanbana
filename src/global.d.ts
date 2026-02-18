@@ -49,6 +49,8 @@ declare global {
   type HiganbanaGlobalApi = {
     /** 读取项目配置：可读当前项目、指定项目或全部项目 */
     getProject: (payload?: HiganbanaProjectQueryPayload) => Promise<any>;
+    /** 兼容旧命名，等价于 getProject */
+    getProjectConfig?: (payload?: HiganbanaProjectQueryPayload) => Promise<any>;
     /** 创建新项目：支持 URL / local / embedded，也支持传 zipArrayBuffer/zipBlob/importZipBase64 导入后创建 */
     createProject: (payload?: HiganbanaProjectCreatePayload) => Promise<any>;
     /**

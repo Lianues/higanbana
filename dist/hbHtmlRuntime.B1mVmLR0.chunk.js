@@ -1,35 +1,13 @@
-export type HbHtmlRuntimeInjectOptions = {
-  /**
-   * SillyTavern 的 origin（例如 http://127.0.0.1:8000）。
-   * - 普通页面可留空，运行时会从 location 推导
-   * - blob 页面建议传入，避免相对 URL 解析到 blob: scheme
-   */
-  origin?: string;
-  /**
-   * 是否强制注入/修复 <base href="...">。
-   * - blob 页面中 root-relative（/xxx）在部分浏览器/场景会被解析到 blob:，导致资源加载失败
-   * - VFS 页面（WebZip）不应开启，否则会破坏项目自身的相对资源路径
-   */
-  forceBaseHref?: boolean;
-};
-
-const MARKER = '/*__HB_HTML_COMPAT__*/';
-
-function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
-  const origin = String(opts.origin ?? '').trim();
-  const forceBaseHref = Boolean(opts.forceBaseHref);
-
-  // NOTE: 这里必须是纯字符串注入，不依赖任何构建时 import（要能在任意 HTML 中独立运行）
-  return `
-<script>${MARKER}
+const a="/*__HB_HTML_COMPAT__*/";function c(t){const n=String(t.origin??"").trim(),e=!!t.forceBaseHref;return`
+<script>${a}
 (() => {
   const G = globalThis;
   const KEY = '__HB_HTML_COMPAT_RUNTIME__';
   if (G[KEY]) return;
   G[KEY] = { v: 1 };
 
-  const FORCE_BASE = ${forceBaseHref ? 'true' : 'false'};
-  const INJECTED_ORIGIN = ${JSON.stringify(origin)};
+  const FORCE_BASE = ${e?"true":"false"};
+  const INJECTED_ORIGIN = ${JSON.stringify(n)};
 
   // 推导 SillyTavern origin（用于 blob/sandbox 场景的绝对 URL 构造）
   const deriveOrigin = () => {
@@ -64,157 +42,32 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     }
   }
 
-  // ---- 插件内桥接通道（BroadcastChannel RPC） ----
-  const HB_RPC_CHANNEL = 'hb_higanbana_rpc_v1';
-  const HB_RPC_REQ = 'HB_BRIDGE_RPC_REQ';
-  const HB_RPC_RES = 'HB_BRIDGE_RPC_RES';
-  const HB_RPC_CLIENT_ID = 'hb-client-' + Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
-  const HB_RPC_TIMEOUT_MS = 10000;
-  let hbRpcSeq = 0;
-  const hbRpcPending = new Map();
-  let hbRpcChannel = null;
-  let hbRpcUnavailable = false;
-
-  const ensureRpcChannel = () => {
-    if (hbRpcUnavailable) return null;
-    if (hbRpcChannel) return hbRpcChannel;
+  // ---- 直连上层同源 window（不再使用 postMessage/BroadcastChannel 旧桥接） ----
+  const pickDirectWindow = () => {
+    const wins = [];
+    try { if (window.parent && window.parent !== window) wins.push(window.parent); } catch {}
     try {
-      const ch = new BroadcastChannel(HB_RPC_CHANNEL);
-      ch.addEventListener('message', ev => {
-        const data = ev && ev.data;
-        if (!data || data.type !== HB_RPC_RES) return;
-        if (String(data.clientId || '') !== HB_RPC_CLIENT_ID) return;
-        const id = String(data.id || '');
-        const pending = hbRpcPending.get(id);
-        if (!pending) return;
-        hbRpcPending.delete(id);
-        clearTimeout(pending.timer);
+      if (window.top && window.top !== window && wins.indexOf(window.top) < 0) wins.push(window.top);
+    } catch {}
+    try {
+      if (window.opener && wins.indexOf(window.opener) < 0) wins.push(window.opener);
+    } catch {}
 
-        if (data.ok) {
-          pending.resolve(decodeRpcResult(data.result));
-        } else {
-          pending.reject(new Error(String(data.error || 'RPC 调用失败')));
-        }
-      });
-      hbRpcChannel = ch;
-      return ch;
-    } catch {
-      hbRpcUnavailable = true;
-      return null;
-    }
-  };
-
-  const callBridgeRpc = (root, path, args) => {
-    const ch = ensureRpcChannel();
-    if (!ch) {
-      return Promise.reject(new Error('RPC 桥接通道不可用'));
-    }
-
-    const id = HB_RPC_CLIENT_ID + ':' + String(++hbRpcSeq);
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        hbRpcPending.delete(id);
-        reject(new Error('RPC 调用超时'));
-      }, HB_RPC_TIMEOUT_MS);
-
-      hbRpcPending.set(id, { resolve, reject, timer });
+    for (const w of wins) {
       try {
-        ch.postMessage({
-          type: HB_RPC_REQ,
-          id,
-          clientId: HB_RPC_CLIENT_ID,
-          root,
-          path: Array.isArray(path) ? path : [],
-          args: Array.isArray(args) ? args : [],
-        });
-      } catch (err) {
-        hbRpcPending.delete(id);
-        clearTimeout(timer);
-        reject(err);
+        // 同源可访问时，读取 location 不会抛异常
+        void w.location;
+        return w;
+      } catch {
+        // ignore
       }
-    });
-  };
-
-  const decodeRpcResult = result => {
-    try {
-      if (!result || typeof result !== 'object') return result;
-      if ((result.__hb_rpc_function__ === true || result.__hb_rpc_object__ === true) && result.root) {
-        const root = String(result.root || '').trim();
-        const path = Array.isArray(result.path) ? result.path.map(x => String(x)) : [];
-        if (root) return createBridgeProxy(root, path);
-      }
-      return result;
-    } catch {
-      return result;
     }
+    return null;
   };
 
-  const createBridgeProxy = (root, path = []) => {
-    const fn = function () {};
-    return new Proxy(fn, {
-      get(_t, prop) {
-        if (prop === 'then') return undefined;
-        if (prop === Symbol.toStringTag) return 'HBBridgeProxy';
-        if (prop === '__hbBridgeRoot') return root;
-        if (prop === '__hbBridgePath') return path.slice();
-        if (prop === '__hbBridgeGet') return () => callBridgeRpc(root, path, []);
-        if (prop === 'toJSON') return () => '[HBBridgeProxy ' + root + '.' + path.join('.') + ']';
-        if (prop === 'toString') return () => '[HBBridgeProxy ' + root + '.' + path.join('.') + ']';
-        if (prop === 'valueOf') return () => ({ __hbBridgeRoot: root, __hbBridgePath: path.slice() });
-        if (typeof prop === 'symbol') return undefined;
-        return createBridgeProxy(root, path.concat(String(prop)));
-      },
-      apply(_t, _thisArg, args) {
-        return callBridgeRpc(root, path, args);
-      },
-    });
-  };
+  const DIRECT_WIN = pickDirectWindow();
 
-  const defineBridgeGlobalGetter = key => {
-    const k = String(key || '').trim();
-    if (!k) return;
-    if (k === '__proto__' || k === 'prototype' || k === 'constructor') return;
-    if (k in G) return;
-
-    try {
-      Object.defineProperty(G, k, {
-        configurable: true,
-        enumerable: false,
-        get() {
-          return createBridgeProxy('__HB_GLOBAL__', [k]);
-        },
-      });
-    } catch {
-      // ignore
-    }
-  };
-
-  const installCoreBridgeGlobals = () => {
-    defineBridgeGlobalGetter('ST_API');
-    defineBridgeGlobalGetter('Higanbana');
-    defineBridgeGlobalGetter('higanbana');
-  };
-
-  const installBridgeGlobals = async () => {
-    // 先同步装核心入口，避免首帧访问 undefined。
-    installCoreBridgeGlobals();
-
-    try {
-      const keys = await callBridgeRpc('__HB_INTERNAL__', ['listGlobals'], []);
-      const rootProxy = createBridgeProxy('__HB_GLOBAL__');
-      G.__HB_TOP__ = rootProxy;
-
-      if (!Array.isArray(keys)) return;
-
-      for (const keyRaw of keys) {
-        defineBridgeGlobalGetter(keyRaw);
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  // ---- CSRF token：优先本页上下文获取，失败则走 /csrf-token ----
+  // ---- CSRF token：优先直连上层 window 获取，失败则走 /csrf-token ----
   const rawFetch = typeof G.fetch === 'function' ? G.fetch.bind(G) : null;
   let csrfToken = '';
   let csrfPromise = null;
@@ -247,7 +100,22 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     if (csrfToken) return csrfToken;
     if (csrfPromise) return csrfPromise;
     csrfPromise = (async () => {
-      // 1) 本页上下文
+      // 1) 优先从上层 window 拿
+      try {
+        const upper = DIRECT_WIN || G;
+        const st = upper && upper.SillyTavern;
+        const ctx = st && typeof st.getContext === 'function' ? st.getContext() : null;
+        const h = ctx && typeof ctx.getRequestHeaders === 'function' ? ctx.getRequestHeaders() : null;
+        const t1 = extractTokenFromHeadersObj(h);
+        if (t1) {
+          csrfToken = t1;
+          return t1;
+        }
+      } catch {
+        // ignore
+      }
+
+      // 2) 本页上下文
       try {
         const ctx = G.SillyTavern && typeof G.SillyTavern.getContext === 'function' ? G.SillyTavern.getContext() : null;
         const h = ctx && typeof ctx.getRequestHeaders === 'function' ? ctx.getRequestHeaders() : null;
@@ -260,7 +128,7 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
         // ignore
       }
 
-      // 2) fallback：/csrf-token
+      // 3) 最后 fallback：/csrf-token
       try {
         const t3 = await fetchCsrfToken();
         if (t3) csrfToken = t3;
@@ -452,19 +320,38 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     // ignore
   }
 
-  // ---- 透传主页面 API（通过插件内桥接 RPC，而非 opener 直连） ----
+  // ---- 上层同源 API（与 parent/top/opener 同级直连） ----
+  const DIRECT = {
+    hb: null,
+    stApi: null,
+  };
   try {
-    // 先为 SillyTavern 保留最小上下文兜底，同时附加桥接代理入口。
-    if (!G.SillyTavern || typeof G.SillyTavern !== 'object') {
-      G.SillyTavern = {};
-    }
-    if (!G.SillyTavern.__hbBridgeProxy) {
-      G.SillyTavern.__hbBridgeProxy = createBridgeProxy('SillyTavern');
-    }
+    if (DIRECT_WIN && DIRECT_WIN.Higanbana && typeof DIRECT_WIN.Higanbana === 'object') DIRECT.hb = DIRECT_WIN.Higanbana;
+  } catch {}
+  try {
+    if (DIRECT_WIN && DIRECT_WIN.ST_API) DIRECT.stApi = DIRECT_WIN.ST_API;
+  } catch {}
 
-    // 安装桥接全局（核心入口同步，其余全局异步按需透传）。
-    // 读取非函数值时可使用 window.xxx.__hbBridgeGet()
-    void installBridgeGlobals();
+  // ---- 提供 ST_API（仅直连上层同源 window） ----
+  try {
+    if (!G.ST_API && DIRECT.stApi) {
+      G.ST_API = DIRECT.stApi;
+    }
+  } catch {
+    // ignore
+  }
+
+  // ---- 提供 Higanbana 项目管理 API（与 parent/top/opener 同级直连） ----
+  try {
+    if (DIRECT.hb && typeof DIRECT.hb === 'object') {
+      G.Higanbana = DIRECT.hb;
+      G.higanbana = DIRECT.hb;
+    } else if (G.Higanbana && typeof G.Higanbana === 'object') {
+      if (!G.higanbana || typeof G.higanbana !== 'object') G.higanbana = G.Higanbana;
+    } else {
+      G.Higanbana = {};
+      G.higanbana = G.Higanbana;
+    }
   } catch {
     // ignore
   }
@@ -505,30 +392,5 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     // ignore
   }
 })();
-</script>
-`;
-}
-
-export function injectHbHtmlRuntime(html: string, opts: HbHtmlRuntimeInjectOptions = {}): string {
-  const raw = String(html ?? '');
-  if (!raw.trim()) return raw;
-  if (raw.includes(MARKER)) return raw;
-
-  const injection = buildRuntimeScript(opts);
-
-  // 优先插入到 <head> 后（更早执行）
-  const headRe = /<head\\b[^>]*>/i;
-  if (headRe.test(raw)) {
-    return raw.replace(headRe, m => m + injection);
-  }
-
-  // 没有 head：插入到 <html> 后并补 head（尽量不改变 body 内容）
-  const htmlRe = /<html\\b[^>]*>/i;
-  if (htmlRe.test(raw)) {
-    return raw.replace(htmlRe, m => m + `<head>${injection}</head>`);
-  }
-
-  // Fragment/非完整文档：直接前置（浏览器会把它当作 head 内容解析）
-  return injection + raw;
-}
-
+<\/script>
+`}function h(t,n={}){const e=String(t??"");if(!e.trim()||e.includes(a))return e;const r=c(n),o=/<head\\b[^>]*>/i;if(o.test(e))return e.replace(o,i=>i+r);const s=/<html\\b[^>]*>/i;return s.test(e)?e.replace(s,i=>i+`<head>${r}</head>`):r+e}export{h as i};

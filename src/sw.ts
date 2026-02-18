@@ -59,7 +59,7 @@ sw.addEventListener('fetch', (event: FetchEvent) => {
       if (cached) {
         // 给 VFS 的 HTML 页面注入运行时兼容层：
         // - 自动处理 CSRF（新标签页打开时不会 403）
-        // - 提供 ST_API 代理（可选；若主页面有 ST_API）
+        // - 直连复用上层同源 window 的全局能力
         // - 提供跨域测高上报（父页面可选监听）
         try {
           const ct = String(cached.headers.get('content-type') || '').toLowerCase();

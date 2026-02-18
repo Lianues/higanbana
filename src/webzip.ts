@@ -323,120 +323,7 @@ export async function sha256Hex(arrayBuffer: ArrayBuffer): Promise<string> {
     .join('');
 }
 
-type Base64WorkerRequest =
-  | {
-      id: number;
-      type: 'arrayBufferToBase64';
-      arrayBuffer: ArrayBuffer;
-    }
-  | {
-      id: number;
-      type: 'base64ToArrayBuffer';
-      base64: string;
-    };
-
-type Base64WorkerResponse =
-  | {
-      id: number;
-      ok: true;
-      base64: string;
-    }
-  | {
-      id: number;
-      ok: true;
-      arrayBuffer: ArrayBuffer;
-    }
-  | {
-      id: number;
-      ok: false;
-      error: string;
-    };
-
-type Base64WorkerPending = {
-  resolve: (value: unknown) => void;
-  reject: (reason?: unknown) => void;
-};
-
-let base64Worker: Worker | null = null;
-let base64WorkerDisabled = false;
-let base64WorkerReqId = 0;
-const base64WorkerPending = new Map<number, Base64WorkerPending>();
-
-function rejectAllBase64WorkerPending(reason: unknown): void {
-  const list = [...base64WorkerPending.values()];
-  base64WorkerPending.clear();
-  for (const p of list) {
-    p.reject(reason);
-  }
-}
-
-function getBase64Worker(): Worker | null {
-  if (base64WorkerDisabled) return null;
-  if (base64Worker) return base64Worker;
-  if (typeof Worker === 'undefined') {
-    base64WorkerDisabled = true;
-    return null;
-  }
-
-  try {
-    const worker = new Worker(new URL('./base64.worker.ts', import.meta.url), { type: 'module' });
-
-    worker.onmessage = (evt: MessageEvent<Base64WorkerResponse>) => {
-      const data = evt.data;
-      if (!data || typeof data !== 'object') return;
-      const id = Number((data as any).id);
-      if (!Number.isFinite(id)) return;
-      const pending = base64WorkerPending.get(id);
-      if (!pending) return;
-      base64WorkerPending.delete(id);
-
-      if ((data as any).ok) {
-        if ('base64' in data) pending.resolve(data.base64);
-        else if ('arrayBuffer' in data) pending.resolve(data.arrayBuffer);
-        else pending.reject(new Error('Base64 worker 返回了无效结果'));
-        return;
-      }
-
-      pending.reject(new Error((data as any).error || 'Base64 worker 执行失败'));
-    };
-
-    const onWorkerBroken = (event: Event | ErrorEvent) => {
-      console.warn('[Higanbana] Base64 Worker 不可用，回退到主线程编解码', event);
-      base64WorkerDisabled = true;
-      try {
-        worker.terminate();
-      } catch {
-        //
-      }
-      if (base64Worker === worker) base64Worker = null;
-      rejectAllBase64WorkerPending(new Error('Base64 Worker 已失效'));
-    };
-
-    worker.onerror = onWorkerBroken;
-    worker.onmessageerror = onWorkerBroken;
-
-    base64Worker = worker;
-    return worker;
-  } catch (err) {
-    console.warn('[Higanbana] 创建 Base64 Worker 失败，回退到主线程编解码', err);
-    base64WorkerDisabled = true;
-    return null;
-  }
-}
-
-function runBase64WorkerTask<T>(task: Omit<Base64WorkerRequest, 'id'>): Promise<T> {
-  const worker = getBase64Worker();
-  if (!worker) {
-    return Promise.reject(new Error('Base64 Worker 不可用'));
-  }
-
-  return new Promise<T>((resolve, reject) => {
-    const id = ++base64WorkerReqId;
-    base64WorkerPending.set(id, { resolve, reject });
-    worker.postMessage({ ...task, id });
-  });
-}
-
+// 按用户需求：彻底移除 Base64 Worker，统一走主线程编解码。
 function arrayBufferToBase64Sync(arrayBuffer: ArrayBuffer): string {
   const bytes = new Uint8Array(arrayBuffer);
   const chunkSize = 0x8000;
@@ -458,21 +345,11 @@ function base64ToArrayBufferSync(base64: string): ArrayBuffer {
 }
 
 export async function arrayBufferToBase64(arrayBuffer: ArrayBuffer): Promise<string> {
-  try {
-    return await runBase64WorkerTask<string>({ type: 'arrayBufferToBase64', arrayBuffer });
-  } catch {
-    // Worker 不可用时，降级到主线程实现（保持兼容）
-    return arrayBufferToBase64Sync(arrayBuffer);
-  }
+  return arrayBufferToBase64Sync(arrayBuffer);
 }
 
 export async function base64ToArrayBuffer(base64: string): Promise<ArrayBuffer> {
-  try {
-    return await runBase64WorkerTask<ArrayBuffer>({ type: 'base64ToArrayBuffer', base64 });
-  } catch {
-    // Worker 不可用时，降级到主线程实现（保持兼容）
-    return base64ToArrayBufferSync(base64);
-  }
+  return base64ToArrayBufferSync(base64);
 }
 
 export type ZipDownloadProgress = {

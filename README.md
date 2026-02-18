@@ -11,7 +11,7 @@ SillyTavern 扩展「彼岸花」，提供 **Zip 前端沙盒渲染**：用户�
 - **HTML 代码块渲染**：消息中的 HTML 代码块（\`\`\`html ... \`\`\`）在设置开启时，以独立 blob URL 在 iframe 中沙盒渲染，可配置是否显示标题栏等。
 - **资源复用**：同一项目在多个占位符或多次出现时，共用同一份 Cache 与 VFS 路径，由 Service Worker 统一拦截并返回 zip 内资源。
 - **URL 绑定**：支持仅保存 zip 的 URL，进入聊天时再下载并显示进度，支持取消；也可在面板内重新下载并应用。
-- **项目自管理 API（CRUD）**：在 WebZip 页面内可调用 `window.Higanbana.getProject / createProject / updateProject / deleteProject` 管理项目。
+- **项目自管理 API（CRUD）**：采用同源直连模型，WebZip 页面可直接使用 `window.Higanbana.getProject / createProject / updateProject / deleteProject` 管理项目。
 
 ---
 
@@ -70,6 +70,14 @@ higanbana/                    # 项目根目录
 ---
 
 ## 项目内可用的管理函数（运行时注入）
+
+主页面会直接挂全局：`window.Higanbana` / `window.higanbana`（同时可从 `SillyTavern.libs.higanbana` 访问）。
+
+当前为**纯同源直连模型**：彼岸花注入的运行时会直接复用 `parent/top/opener` 的同源全局对象（如 `Higanbana`、`ST_API`、`SillyTavern`），
+不再依赖 `postMessage/BroadcastChannel` 旧桥接。
+
+因此在同源页面中可统一直接调用 API，不再区分“必须在 VFS 页面里才有 API”。
+
 
 在由彼岸花渲染的 WebZip 页面里，可直接调用：
 

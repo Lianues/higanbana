@@ -547,7 +547,23 @@ export type ImportZipAndOverwriteProjectInActiveCardResult = {
   };
 };
 
-function toSafeArrayBuffer(data: ArrayBuffer | Uint8Array): ArrayBuffer {
+function isArrayBufferLike(value: unknown): value is ArrayBuffer {
+  if (!value || typeof value !== 'object') return false;
+  if (value instanceof ArrayBuffer) return true;
+  try {
+    return Object.prototype.toString.call(value) === '[object ArrayBuffer]';
+  } catch {
+    return false;
+  }
+}
+
+function toSafeArrayBuffer(data: ArrayBuffer | Uint8Array | ArrayBufferView): ArrayBuffer {
+  if (ArrayBuffer.isView(data)) {
+    const src = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    const out = new Uint8Array(src.byteLength);
+    out.set(src);
+    return out.buffer;
+  }
   if (data instanceof Uint8Array) {
     const out = new Uint8Array(data.byteLength);
     out.set(data);
@@ -560,8 +576,14 @@ function toSafeArrayBuffer(data: ArrayBuffer | Uint8Array): ArrayBuffer {
 }
 
 async function normalizeZipInputToArrayBuffer(input: ImportZipAndOverwriteProjectInActiveCardInput): Promise<ArrayBuffer> {
-  if (input?.zipArrayBuffer instanceof ArrayBuffer || input?.zipArrayBuffer instanceof Uint8Array) {
-    return toSafeArrayBuffer(input.zipArrayBuffer);
+  const raw = (input as any)?.zipArrayBuffer;
+  if (raw) {
+    if (isArrayBufferLike(raw) || ArrayBuffer.isView(raw)) {
+      return toSafeArrayBuffer(raw as ArrayBuffer | Uint8Array | ArrayBufferView);
+    }
+    if (typeof Blob !== 'undefined' && Object.prototype.toString.call(raw) === '[object Blob]' && typeof (raw as any).arrayBuffer === 'function') {
+      return toSafeArrayBuffer(new Uint8Array(await (raw as Blob).arrayBuffer()));
+    }
   }
   const zipBase64 = String(input?.importZipBase64 ?? input?.zipBase64 ?? '').trim();
   if (zipBase64) {
