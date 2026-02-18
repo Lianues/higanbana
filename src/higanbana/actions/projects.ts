@@ -1,4 +1,4 @@
-import type { HiganbanaCardData, HiganbanaProject, HiganbanaProjectEmbedded, HiganbanaProjectUrl } from '../card';
+import type { HiganbanaCardData, HiganbanaProject, HiganbanaProjectEmbedded, HiganbanaProjectLocal, HiganbanaProjectUrl } from '../card';
 import { getCardData, writeCardData } from '../card';
 import { cachedProjectIds, refreshCachedProjects } from '../cache';
 import { extensionBase } from '../env';
@@ -27,10 +27,23 @@ import {
   base64ToArrayBuffer,
   buildVfsUrl,
   downloadZipArrayBufferFromUrlWithProgress,
+  formatBytes,
   importZipArrayBufferToVfs,
 } from '../../webzip';
 
 let panelUrlDownloadAbortController: AbortController | null = null;
+const EMBEDDED_ZIP_MAX_BYTES = 20 * 1024 * 1024;
+
+function assertEmbeddableZipSize(zipArrayBuffer: ArrayBuffer): void {
+  const size = Number(zipArrayBuffer?.byteLength ?? 0);
+  if (!Number.isFinite(size) || size <= EMBEDDED_ZIP_MAX_BYTES) {
+    return;
+  }
+  const limitMb = Math.round(EMBEDDED_ZIP_MAX_BYTES / 1024 / 1024);
+  throw new Error(
+    `当前 zip 大小为 ${formatBytes(size)}，超过嵌入上限（${limitMb} MB）。请改用“添加本地缓存项目（不嵌入）”或 URL 模式。`,
+  );
+}
 
 function setPanelUrlDownloadVisible(visible: boolean): void {
   const $wrap = $('#hb_url_download_wrap');
@@ -160,6 +173,8 @@ export async function bindZipArrayBufferToActiveCharacter(zipName: string, zipAr
     throw new Error('当前不在单角色聊天/未选中角色');
   }
 
+  assertEmbeddableZipSize(zipArrayBuffer);
+
   const avatar = getCharacterAvatar(active.character);
   if (avatar) {
     allowAvatar(avatar);
@@ -181,7 +196,7 @@ export async function bindZipArrayBufferToActiveCharacter(zipName: string, zipAr
   await refreshCachedProjects();
 
   setStatus('正在编码 base64 并写入角色卡扩展字段...');
-  const zipBase64 = arrayBufferToBase64(zipArrayBuffer);
+  const zipBase64 = await arrayBufferToBase64(zipArrayBuffer);
 
   const card = getCardData(active.character);
   const desiredPlaceholder = normalizePlaceholderInput($('#hb_placeholder').val());
@@ -217,6 +232,138 @@ export async function bindZipArrayBufferToActiveCharacter(zipName: string, zipAr
   );
 }
 
+export async function bindZipArrayBufferToActiveCharacterLocalOnly(
+  zipName: string,
+  zipArrayBuffer: ArrayBuffer,
+): Promise<void> {
+  const active = getActiveCharacter();
+  if (!active) {
+    throw new Error('当前不在单角色聊天/未选中角色');
+  }
+
+  const avatar = getCharacterAvatar(active.character);
+  if (avatar) {
+    allowAvatar(avatar);
+  }
+
+  const s = getSettings();
+  const fixRootRelativeUrls = Boolean($('#hb_fix_root_relative').prop('checked'));
+  s.defaultFixRootRelativeUrls = fixRootRelativeUrls;
+  saveSettings();
+
+  const preferredHomePage = String($('#hb_homepage').val() ?? '').trim() || undefined;
+
+  setStatus('正在解压并写入 VFS 缓存...');
+  const imported = await importZipArrayBufferToVfs(extensionBase, zipArrayBuffer, {
+    fixRootRelativeUrls,
+    preferredHomePage,
+  });
+  cachedProjectIds.add(imported.projectId);
+  await refreshCachedProjects();
+
+  const card = getCardData(active.character);
+  const desiredPlaceholder = normalizePlaceholderInput($('#hb_placeholder').val());
+  const placeholder = ensureUniquePlaceholder(card.projects, desiredPlaceholder);
+  const userTitle = String($('#hb_new_title').val() ?? '').trim();
+  const showTitleInChat = $('#hb_new_show_title').length ? Boolean($('#hb_new_show_title').prop('checked')) : false;
+  const project: HiganbanaProjectLocal = {
+    source: 'local',
+    id: generateProjectId(),
+    title: userTitle || undefined,
+    placeholder,
+    homePage: imported.homePage,
+    showTitleInChat,
+    fixRootRelativeUrls,
+    zipName,
+    zipSha256: imported.projectId,
+  };
+
+  const data: HiganbanaCardData = {
+    projects: [...card.projects, project],
+  };
+
+  await writeCardData(active.chid, data);
+  const $ph = $('#hb_placeholder');
+  if ($ph.length && document.activeElement !== $ph.get(0)) {
+    $ph.val('');
+  }
+  refreshCharacterUi();
+  $('#hb_new_title').val('');
+  setStatus(
+    `已添加项目（本地缓存模式，不嵌入角色卡）。\n占位符：${placeholder}\nprojectId(sha256)：${imported.projectId}\n入口：${imported.homePage}\n文件数：${imported.fileCount}\n\n提示：导出角色卡时不会包含该 zip；若浏览器缓存被清理，需要在本机重新导入 zip。`,
+  );
+}
+
+export async function migrateEmbeddedProjectsToLocalInActiveCard({
+  allow = true,
+  ensureCached = true,
+  reloadChat = true,
+}: {
+  allow?: boolean;
+  ensureCached?: boolean;
+  reloadChat?: boolean;
+} = {}): Promise<{ totalEmbedded: number; migrated: number; importedCount: number; cancelled: boolean }> {
+  const ctx = getStContext();
+  const active = getActiveCharacter();
+  if (!active) throw new Error('当前不在单角色聊天/未选中角色');
+
+  const avatar = getCharacterAvatar(active.character);
+  if (allow && avatar) {
+    allowAvatar(avatar);
+  }
+
+  const card = getCardData(active.character);
+  const embeddedProjects = card.projects.filter(p => p.source === 'embedded') as HiganbanaProjectEmbedded[];
+  const totalEmbedded = embeddedProjects.length;
+  if (totalEmbedded === 0) {
+    return { totalEmbedded: 0, migrated: 0, importedCount: 0, cancelled: false };
+  }
+
+  let importedCount = 0;
+  let cancelled = false;
+
+  if (ensureCached) {
+    const missingEmbedded = embeddedProjects.filter(p => isProjectMissingCache(p));
+    if (missingEmbedded.length > 0) {
+      setStatus(`发现 ${missingEmbedded.length} 个嵌入项目未缓存，正在导入缓存...`);
+      const r = await importProjectsToCacheWithPopupQueue(active.chid, missingEmbedded);
+      importedCount = r.importedCount;
+      cancelled = r.cancelled;
+      if (cancelled) {
+        setStatus('已取消迁移（未修改角色卡）');
+        return { totalEmbedded, migrated: 0, importedCount, cancelled: true };
+      }
+    }
+  }
+
+  // 重新读取，确保拿到导入缓存后可能被修正过 zipSha256/homePage 的最新项目数据
+  const latest = getCardData(active.character);
+  let migrated = 0;
+  const nextProjects = latest.projects.map(p => {
+    if (p.source !== 'embedded') return p;
+    migrated++;
+    const localProj: HiganbanaProjectLocal = {
+      source: 'local',
+      id: p.id,
+      title: p.title,
+      placeholder: p.placeholder,
+      homePage: p.homePage,
+      showTitleInChat: p.showTitleInChat,
+      fixRootRelativeUrls: p.fixRootRelativeUrls,
+      zipName: p.zipName,
+      zipSha256: p.zipSha256,
+    };
+    return localProj;
+  });
+
+  await writeCardData(active.chid, { projects: nextProjects });
+  if (reloadChat && ctx?.reloadCurrentChat) {
+    await ctx.reloadCurrentChat();
+  }
+  refreshCharacterUi();
+  return { totalEmbedded, migrated, importedCount, cancelled: false };
+}
+
 export async function importActiveCardWebzipToCache({
   allow = true,
   reloadChat = true,
@@ -243,7 +390,7 @@ export async function importActiveCardWebzipToCache({
     if (proj.zipSha256 && cachedProjectIds.has(proj.zipSha256)) continue;
     setStatus(`正在从角色卡导入：${proj.title || proj.zipName} ...`);
 
-    const buf = base64ToArrayBuffer(proj.zipBase64);
+    const buf = await base64ToArrayBuffer(proj.zipBase64);
     // eslint-disable-next-line no-await-in-loop
     const imported = await importZipArrayBufferToVfs(extensionBase, buf, {
       fixRootRelativeUrls: proj.fixRootRelativeUrls,
@@ -302,11 +449,11 @@ export function openProjectHomeInNewTab(projectId: string): void {
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
-export function exportEmbeddedProjectZip(projectId: string): void {
+export async function exportEmbeddedProjectZip(projectId: string): Promise<void> {
   const { card } = getActiveCardOrThrow();
   const proj = findProjectOrThrow(card, projectId);
   if (proj.source !== 'embedded') throw new Error('当前项目不是嵌入模式，无法导出 zip');
-  const buf = base64ToArrayBuffer(proj.zipBase64);
+  const buf = await base64ToArrayBuffer(proj.zipBase64);
   const blob = new Blob([buf], { type: 'application/zip' });
   downloadBlob(blob, proj.zipName || 'webzip.zip');
 }

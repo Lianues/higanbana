@@ -57,14 +57,18 @@
                   </div>
 
                   <div class="hb-row">
-                    <label class="hb-label" for="hb_bind_zip">导入本地 zip（嵌入）</label>
+                    <label class="hb-label" for="hb_bind_zip">导入本地 zip</label>
                     <div class="hb-file-picker">
                       <input id="hb_bind_zip" type="file" accept=".zip" />
                       <button id="hb_pick_zip_btn" class="menu_button" type="button">选择 zip</button>
                       <div id="hb_bind_zip_name" class="hb-file-name">（未选择文件）</div>
                     </div>
                     <div class="hb-actions">
-                      <button id="hb_bind_zip_btn" class="menu_button">添加嵌入项目</button>
+                      <button id="hb_bind_zip_btn" class="menu_button">添加嵌入项目（写入角色卡）</button>
+                      <button id="hb_bind_zip_local_btn" class="menu_button">添加本地缓存项目（不嵌入）</button>
+                    </div>
+                    <div class="hb-subhint">
+                      嵌入模式限制为 <code>20 MB</code>（zip 原始大小）；超过请使用“本地缓存项目”或 URL 模式。
                     </div>
                   </div>
 
@@ -93,6 +97,7 @@
                 <label class="hb-label">全局操作</label>
                 <div class="hb-actions">
                   <button id="hb_import_from_card" class="menu_button">导入所有嵌入项目到本地缓存</button>
+                  <button id="hb_migrate_embedded_to_local" class="menu_button">将嵌入项目迁移为本地缓存模式</button>
                   <button id="hb_unbind" class="menu_button danger">解绑全部项目</button>
                 </div>
               </div>

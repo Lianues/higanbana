@@ -75,8 +75,12 @@ export async function importProjectsToCacheWithPopupQueue(
         // eslint-disable-next-line no-await-in-loop
         const dl = await downloadZipArrayBufferFromUrlWithProgress(proj.zipUrl);
         buf = dl.arrayBuffer;
+      } else if (proj.source === 'embedded') {
+        buf = await base64ToArrayBuffer(proj.zipBase64);
       } else {
-        buf = base64ToArrayBuffer(proj.zipBase64);
+        setStatus(`项目“${name}”为本地缓存模式，无法自动恢复缓存，请在面板重新导入本地 zip。`);
+        // eslint-disable-next-line no-continue
+        continue;
       }
 
       // eslint-disable-next-line no-await-in-loop
@@ -163,10 +167,14 @@ export async function importProjectsToCacheWithPopupQueue(
               buf = dl.arrayBuffer;
               progress.value = 100;
               text.textContent = `下载完成（${formatBytes(buf.byteLength)}），正在解压并写入缓存...`;
-            } else {
+            } else if (proj.source === 'embedded') {
               progress.removeAttribute('value');
               text.textContent = `正在从角色卡导入并解压：${proj.zipName}`;
-              buf = base64ToArrayBuffer(proj.zipBase64);
+              buf = await base64ToArrayBuffer(proj.zipBase64);
+            } else {
+              text.textContent = `项目“${name}”为本地缓存模式，无法自动恢复缓存。请在面板重新导入本地 zip。`;
+              // eslint-disable-next-line no-continue
+              continue;
             }
 
             // eslint-disable-next-line no-await-in-loop

@@ -23,7 +23,12 @@ export type HiganbanaProjectUrl = HiganbanaProjectBase & {
   zipUrl: string;
 };
 
-export type HiganbanaProject = HiganbanaProjectEmbedded | HiganbanaProjectUrl;
+export type HiganbanaProjectLocal = HiganbanaProjectBase & {
+  /** 仅依赖当前前端缓存，不在角色卡里保存 zip 内容或下载 URL */
+  source: 'local';
+};
+
+export type HiganbanaProject = HiganbanaProjectEmbedded | HiganbanaProjectUrl | HiganbanaProjectLocal;
 
 export type HiganbanaCardData = {
   projects: HiganbanaProject[];
@@ -66,6 +71,22 @@ export function getCardData(character: any): HiganbanaCardData {
         zipName,
         zipSha256,
         zipBase64,
+      });
+      continue;
+    }
+
+    if (source === 'local') {
+      if (!zipSha256) continue;
+      projects.push({
+        source: 'local',
+        id,
+        title,
+        placeholder,
+        homePage,
+        showTitleInChat,
+        fixRootRelativeUrls,
+        zipName,
+        zipSha256,
       });
       continue;
     }

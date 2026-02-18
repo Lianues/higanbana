@@ -25,7 +25,9 @@ export function resolveProjectRenderTarget(project: HiganbanaProject): RenderTar
       reason:
         project.source === 'url'
           ? '该角色卡绑定了 WebZip URL，但尚未允许/下载。切换到该角色时会弹窗询问，或在面板/弹窗中下载并导入缓存。'
-          : '该角色卡包含嵌入 WebZip，但尚未允许/导入。切换到该角色时会弹窗询问，或在面板点“导入所有嵌入项目到本地缓存”。',
+          : project.source === 'embedded'
+            ? '该角色卡包含嵌入 WebZip，但尚未允许/导入。切换到该角色时会弹窗询问，或在面板点“导入所有嵌入项目到本地缓存”。'
+            : '该角色卡绑定了本地缓存项目。请先允许该角色，并确保当前浏览器已导入对应 zip。',
     };
   }
 
@@ -41,7 +43,12 @@ export function resolveProjectRenderTarget(project: HiganbanaProject): RenderTar
     return {
       kind: 'stub',
       title: `彼岸花：未导入缓存（${name}）`,
-      reason: project.source === 'url' ? '请下载并导入缓存后即可渲染。' : '请先导入到本地缓存（面板中可操作），再刷新聊天即可渲染。',
+      reason:
+        project.source === 'url'
+          ? '请下载并导入缓存后即可渲染。'
+          : project.source === 'embedded'
+            ? '请先导入到本地缓存（面板中可操作），再刷新聊天即可渲染。'
+            : '这是“本地缓存模式”项目，当前浏览器未找到缓存。请在扩展面板重新导入本地 zip 并绑定。',
     };
   }
 

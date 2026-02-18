@@ -37,10 +37,12 @@ export function refreshCharacterUi(): void {
     $('#hb_homepage').val(String($('#hb_homepage').val() ?? '').trim() || 'index.html');
     renderProjectsList([]);
     $('#hb_import_from_card').prop('disabled', true);
+    $('#hb_migrate_embedded_to_local').prop('disabled', true);
     $('#hb_unbind').prop('disabled', true);
     $('#hb_pick_zip_btn').prop('disabled', true);
     $('#hb_bind_zip').prop('disabled', true);
     $('#hb_bind_zip_btn').prop('disabled', true);
+    $('#hb_bind_zip_local_btn').prop('disabled', true);
     $('#hb_bind_url').prop('disabled', true);
     $('#hb_bind_url_btn').prop('disabled', true);
     return;
@@ -56,10 +58,12 @@ export function refreshCharacterUi(): void {
 
   const hasProjects = card.projects.length > 0;
   $('#hb_import_from_card').prop('disabled', !card.projects.some(p => p.source === 'embedded'));
+  $('#hb_migrate_embedded_to_local').prop('disabled', !card.projects.some(p => p.source === 'embedded'));
   $('#hb_unbind').prop('disabled', !hasProjects);
   $('#hb_pick_zip_btn').prop('disabled', false);
   $('#hb_bind_zip').prop('disabled', false);
   $('#hb_bind_zip_btn').prop('disabled', false);
+  $('#hb_bind_zip_local_btn').prop('disabled', false);
   $('#hb_bind_url').prop('disabled', false);
   $('#hb_bind_url_btn').prop('disabled', false);
 

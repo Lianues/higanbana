@@ -4,12 +4,14 @@ import {
   abortPanelUrlDownload,
   bindUrlProjectToActiveCharacter,
   bindZipArrayBufferToActiveCharacter,
+  bindZipArrayBufferToActiveCharacterLocalOnly,
   deleteProjectFromActiveCard,
   downloadAndApplyActiveUrlWebzipToCacheFromPanel,
   downloadAndApplyUrlProject,
   exportEmbeddedProjectZip,
   importActiveCardWebzipToCache,
   importEmbeddedProjectToCache,
+  migrateEmbeddedProjectsToLocalInActiveCard,
   openProjectHomeInNewTab,
   unbindAllProjectsFromActiveCard,
 } from '../actions/projects';
@@ -248,11 +250,11 @@ export function bindUi(): void {
     }
   });
 
-  $('#hb_projects_list').on('click', '[data-hb-action="export_zip"]', (e: any) => {
+  $('#hb_projects_list').on('click', '[data-hb-action="export_zip"]', async (e: any) => {
     const id = String((e.currentTarget as HTMLElement | null)?.getAttribute?.('data-project-id') ?? '').trim();
     if (!id) return;
     try {
-      exportEmbeddedProjectZip(id);
+      await exportEmbeddedProjectZip(id);
     } catch (err) {
       console.error('[Higanbana] export zip failed', err);
       toastr.error(`导出失败：${(err as any)?.message ?? err}`);
@@ -334,6 +336,46 @@ export function bindUi(): void {
     }
   });
 
+  $('#hb_migrate_embedded_to_local').on('click', async () => {
+    const active = getActiveCharacter();
+    if (!active) return;
+
+    const card = getCardData(active.character);
+    const embeddedCount = card.projects.filter(p => p.source === 'embedded').length;
+    if (embeddedCount === 0) {
+      toastr.info('当前角色卡没有可迁移的嵌入项目');
+      return;
+    }
+
+    const msg =
+      `确定将当前角色卡中的 ${embeddedCount} 个“嵌入项目”迁移为“本地缓存模式”吗？\n\n` +
+      '迁移后：\n' +
+      '1) 角色卡将不再保存 zipBase64（体积会明显下降）\n' +
+      '2) 若当前浏览器缓存被清理，需要在本机重新导入 zip\n' +
+      '3) 迁移前会先尝试把未缓存项目导入到本地缓存\n';
+
+    let ok = false;
+    try {
+      if (ctx?.Popup?.show?.confirm) ok = await ctx.Popup.show.confirm('彼岸花', msg);
+      else ok = window.confirm(msg);
+    } catch {
+      ok = window.confirm(msg);
+    }
+    if (!ok) return;
+
+    try {
+      const r = await migrateEmbeddedProjectsToLocalInActiveCard({ allow: true, ensureCached: true, reloadChat: true });
+      if (r.cancelled) {
+        toastr.info('已取消迁移（未修改角色卡）');
+        return;
+      }
+      toastr.success(`迁移完成：${r.migrated}/${r.totalEmbedded}，预导入缓存：${r.importedCount}`);
+    } catch (err) {
+      console.error('[Higanbana] migrate embedded->local failed', err);
+      toastr.error(`迁移失败：${(err as any)?.message ?? err}`);
+    }
+  });
+
   $('#hb_open_home').on('click', () => {
     const active = getActiveCharacter();
     if (!active) return;
@@ -351,7 +393,7 @@ export function bindUi(): void {
     window.open(url, '_blank', 'noopener,noreferrer');
   });
 
-  $('#hb_export_zip').on('click', () => {
+  $('#hb_export_zip').on('click', async () => {
     const active = getActiveCharacter();
     if (!active) return;
     const card = getCardData(active.character);
@@ -361,7 +403,7 @@ export function bindUi(): void {
       return;
     }
     try {
-      const buf = base64ToArrayBuffer(project.zipBase64);
+      const buf = await base64ToArrayBuffer(project.zipBase64);
       const blob = new Blob([buf], { type: 'application/zip' });
       downloadBlob(blob, project.zipName || 'webzip.zip');
     } catch (err) {
@@ -415,6 +457,28 @@ export function bindUi(): void {
       $('#hb_bind_zip_name').text('（未选择文件）');
     } catch (err) {
       console.error('[Higanbana] bind zip failed', err);
+      toastr.error(`绑定失败：${(err as any)?.message ?? err}`);
+    }
+  });
+
+  $('#hb_bind_zip_local_btn').on('click', async () => {
+    const active = getActiveCharacter();
+    if (!active) {
+      toastr.error('当前不在单角色聊天/未选中角色');
+      return;
+    }
+    const file = ($('#hb_bind_zip').get(0) as HTMLInputElement | undefined)?.files?.[0];
+    if (!file) {
+      toastr.error('请先选择 zip 文件');
+      return;
+    }
+    try {
+      await bindZipArrayBufferToActiveCharacterLocalOnly(file.name, await file.arrayBuffer());
+      // allow re-select same file
+      ($('#hb_bind_zip').get(0) as HTMLInputElement).value = '';
+      $('#hb_bind_zip_name').text('（未选择文件）');
+    } catch (err) {
+      console.error('[Higanbana] bind local zip failed', err);
       toastr.error(`绑定失败：${(err as any)?.message ?? err}`);
     }
   });

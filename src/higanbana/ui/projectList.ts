@@ -156,7 +156,7 @@ export function renderProjectsList(projects: HiganbanaProject[]): void {
         btnExport.dataset.projectId = proj.id;
         btnExport.textContent = '导出 zip';
         actions.appendChild(btnExport);
-      } else {
+      } else if (proj.source === 'url') {
         const btnDl = document.createElement('button');
         btnDl.className = 'menu_button';
         btnDl.type = 'button';
@@ -164,6 +164,14 @@ export function renderProjectsList(projects: HiganbanaProject[]): void {
         btnDl.dataset.projectId = proj.id;
         btnDl.textContent = '下载并应用';
         actions.appendChild(btnDl);
+      } else {
+        const btnLocal = document.createElement('button');
+        btnLocal.className = 'menu_button';
+        btnLocal.type = 'button';
+        btnLocal.disabled = true;
+        btnLocal.title = '仅使用本地缓存。若缓存被清理，请在“新增项目”中重新导入 zip。';
+        btnLocal.textContent = '本地缓存模式';
+        actions.appendChild(btnLocal);
       }
 
       const btnOpen = document.createElement('button');
