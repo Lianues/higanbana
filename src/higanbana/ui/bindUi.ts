@@ -137,6 +137,7 @@ export function bindUi(): void {
       const titleEl = root.querySelector<HTMLInputElement>(`.hb-proj-title[data-project-id="${esc}"]`);
       const phEl = root.querySelector<HTMLInputElement>(`.hb-proj-placeholder[data-project-id="${esc}"]`);
       const homeEl = root.querySelector<HTMLInputElement>(`.hb-proj-home[data-project-id="${esc}"]`);
+      const zipUrlEl = root.querySelector<HTMLInputElement>(`.hb-proj-zip-url[data-project-id="${esc}"]`);
       const fixEl = root.querySelector<HTMLInputElement>(`.hb-proj-fix[data-project-id="${esc}"]`);
       const showTitleEl = root.querySelector<HTMLInputElement>(`.hb-proj-show-title[data-project-id="${esc}"]`);
 
@@ -147,11 +148,14 @@ export function bindUi(): void {
       const nextHome = String(homeEl?.value ?? '').trim();
       const nextFix = Boolean(fixEl?.checked);
       const nextShowTitle = showTitleEl ? Boolean(showTitleEl.checked) : Boolean(cur.showTitleInChat);
+      const nextZipUrl = String(zipUrlEl?.value ?? '').trim();
 
       if (!nextPlaceholder) return;
       if (!nextHome) return;
+      if (cur.source === 'url' && !nextZipUrl) return;
 
       const dup = card.projects.some(p => p.id !== projectId && p.placeholder === nextPlaceholder);
+
       if (dup) {
         toastr.error('占位符重复，请为每个项目设置不同的占位符');
         if (phEl) phEl.value = cur.placeholder;
@@ -163,25 +167,39 @@ export function bindUi(): void {
         cur.placeholder !== nextPlaceholder ||
         cur.homePage !== nextHome ||
         cur.fixRootRelativeUrls !== nextFix ||
-        cur.showTitleInChat !== nextShowTitle;
+        cur.showTitleInChat !== nextShowTitle ||
+        (cur.source === 'url' && cur.zipUrl !== nextZipUrl);
       if (!changed) return;
 
-      const nextProjects = card.projects.map(p =>
-        p.id === projectId
-          ? {
-              ...p,
-              title: nextTitle,
-              placeholder: nextPlaceholder,
-              homePage: nextHome,
-              fixRootRelativeUrls: nextFix,
-              showTitleInChat: nextShowTitle,
-            }
-          : p,
-      );
+      const nextProjects = card.projects.map(p => {
+        if (p.id !== projectId) return p;
+
+        if (p.source === 'url') {
+          return {
+            ...p,
+            title: nextTitle,
+            placeholder: nextPlaceholder,
+            homePage: nextHome,
+            fixRootRelativeUrls: nextFix,
+            showTitleInChat: nextShowTitle,
+            zipUrl: nextZipUrl,
+          };
+        }
+
+        return {
+          ...p,
+          title: nextTitle,
+          placeholder: nextPlaceholder,
+          homePage: nextHome,
+          fixRootRelativeUrls: nextFix,
+          showTitleInChat: nextShowTitle,
+        };
+      });
       await writeCardData(active.chid, { projects: nextProjects });
       if (cur.showTitleInChat !== nextShowTitle) {
         updateEmbedTitleVisibilityForProject(projectId, nextShowTitle);
       }
+
       const headerTitle = root.querySelector<HTMLElement>(`.hb-project[data-project-id="${esc}"] .hb-subpanel-title`);
       if (headerTitle) {
         headerTitle.textContent = `${nextTitle || cur.zipName}  ${nextPlaceholder}`;
@@ -193,7 +211,7 @@ export function bindUi(): void {
     }
   };
 
-  $('#hb_projects_list').on('input', '.hb-proj-title, .hb-proj-placeholder, .hb-proj-home', (e: any) => {
+  $('#hb_projects_list').on('input', '.hb-proj-title, .hb-proj-placeholder, .hb-proj-home, .hb-proj-zip-url', (e: any) => {
     const id = String((e.target as HTMLElement | null)?.getAttribute?.('data-project-id') ?? '').trim();
     if (!id) return;
     scheduleSave(id, 500);

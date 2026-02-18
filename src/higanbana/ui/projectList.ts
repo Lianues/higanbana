@@ -135,6 +135,20 @@ export function renderProjectsList(projects: HiganbanaProject[]): void {
       body.appendChild(row);
     }
 
+    // Zip URL (editable for url source)
+    if (proj.source === 'url') {
+      const row = mkRow('Zip URL');
+      const input = document.createElement('input');
+      input.className = 'text_pole hb-proj-zip-url';
+      input.type = 'text';
+      input.spellcheck = false;
+      input.value = proj.zipUrl;
+      input.dataset.projectId = proj.id;
+      input.placeholder = 'https://example.com/your.zip';
+      row.appendChild(input);
+      body.appendChild(row);
+    }
+
     // Fix root-relative urls
     {
       const row = mkRow('修复 root 相对路径（/xxx）');
