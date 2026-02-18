@@ -1,38 +1,14 @@
-export const HB_HTML_BRIDGE_CHANNEL = 'hb_higanbana_html_bridge_v1';
-
-export type HbHtmlRuntimeInjectOptions = {
-  /**
-   * SillyTavern 的 origin（例如 http://127.0.0.1:8000）。
-   * - 普通页面可留空，运行时会从 location 推导
-   * - blob 页面建议传入，避免相对 URL 解析到 blob: scheme
-   */
-  origin?: string;
-  /**
-   * 是否强制注入/修复 <base href="...">。
-   * - blob 页面中 root-relative（/xxx）在部分浏览器/场景会被解析到 blob:，导致资源加载失败
-   * - VFS 页面（WebZip）不应开启，否则会破坏项目自身的相对资源路径
-   */
-  forceBaseHref?: boolean;
-};
-
-const MARKER = '/*__HB_HTML_COMPAT__*/';
-
-function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
-  const origin = String(opts.origin ?? '').trim();
-  const forceBaseHref = Boolean(opts.forceBaseHref);
-
-  // NOTE: 这里必须是纯字符串注入，不依赖任何构建时 import（要能在任意 HTML 中独立运行）
-  return `
-<script>${MARKER}
+const c="hb_higanbana_html_bridge_v1",s="/*__HB_HTML_COMPAT__*/";function l(t){const r=String(t.origin??"").trim(),e=!!t.forceBaseHref;return`
+<script>${s}
 (() => {
   const G = globalThis;
   const KEY = '__HB_HTML_COMPAT_RUNTIME__';
   if (G[KEY]) return;
   G[KEY] = { v: 1 };
 
-  const CHANNEL = ${JSON.stringify(HB_HTML_BRIDGE_CHANNEL)};
-  const FORCE_BASE = ${forceBaseHref ? 'true' : 'false'};
-  const INJECTED_ORIGIN = ${JSON.stringify(origin)};
+  const CHANNEL = ${JSON.stringify(c)};
+  const FORCE_BASE = ${e?"true":"false"};
+  const INJECTED_ORIGIN = ${JSON.stringify(r)};
 
   // 推导 SillyTavern origin（用于 blob/sandbox 场景的绝对 URL 构造）
   const deriveOrigin = () => {
@@ -414,7 +390,7 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     const parseCurrentZipSha256 = () => {
       try {
         const pathname = String(location.pathname || '');
-        const m = pathname.match(/\/vfs\/([^/]+)\//);
+        const m = pathname.match(//vfs/([^/]+)//);
         if (!m || !m[1]) return '';
         return decodeURIComponent(m[1]);
       } catch {
@@ -454,27 +430,13 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
       return payload;
     };
 
-    const updateProject = async (params = {}) => {
+    const overwrite = async (params = {}) => {
       const payload = params && typeof params === 'object' ? Object.assign({}, params) : {};
-
-      // 支持 zipBlob / zipArrayBuffer（统一转为可结构化克隆的 ArrayBuffer）
-      if (!payload.zipArrayBuffer && payload.zipBlob) {
-        payload.zipArrayBuffer = await toArrayBuffer(payload.zipBlob);
-        try { delete payload.zipBlob; } catch {}
-      } else if (payload.zipArrayBuffer) {
-        payload.zipArrayBuffer = await toArrayBuffer(payload.zipArrayBuffer);
-      }
-
-      // 仅 BroadcastChannel 可用（如 noopener 新标签页）时，允许主页面按 targetZipSha256 处理请求。
-      if (payload.__hbAllowBroadcastZipTarget === undefined) {
-        payload.__hbAllowBroadcastZipTarget = !canPostToParent && !canPostToOpener;
-      }
-
       withCurrentTargetFallback(payload);
-      return await rpc('updateProject', payload, 120000);
+      return await rpc('overwriteProject', payload, 120000);
     };
 
-    const createProject = async (params = {}) => {
+    const importZipAndOverwrite = async (params = {}) => {
       const payload = params && typeof params === 'object' ? Object.assign({}, params) : {};
 
       if (!payload.zipArrayBuffer && payload.zipBlob) {
@@ -484,41 +446,23 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
         payload.zipArrayBuffer = await toArrayBuffer(payload.zipArrayBuffer);
       }
 
-      return await rpc('createProject', payload, 120000);
-    };
-
-    const deleteProject = async (params = {}) => {
-      const payload = params && typeof params === 'object' ? Object.assign({}, params) : {};
-
-      if (payload.__hbAllowBroadcastZipTarget === undefined) {
-        payload.__hbAllowBroadcastZipTarget = !canPostToParent && !canPostToOpener;
-      }
       withCurrentTargetFallback(payload);
-      return await rpc('deleteProject', payload, 120000);
-    };
-
-    const getProject = async (params = {}) => {
-      const payload = params && typeof params === 'object' ? Object.assign({}, params) : {};
-      if (!payload.includeAll) {
-        withCurrentTargetFallback(payload);
-      }
-      return await rpc('getProject', payload, 120000);
+      return await rpc('importAndOverwriteProjectZip', payload, 120000);
     };
 
     if (!G.Higanbana || typeof G.Higanbana !== 'object') G.Higanbana = {};
-    if (typeof G.Higanbana.updateProject !== 'function') {
-      G.Higanbana.updateProject = (params) => updateProject(params || {});
+    if (typeof G.Higanbana.overwriteProject !== 'function') {
+      G.Higanbana.overwriteProject = (params) => overwrite(params || {});
     }
-    if (typeof G.Higanbana.createProject !== 'function') {
-      G.Higanbana.createProject = (params) => createProject(params || {});
+    if (typeof G.Higanbana.overwriteCurrentProject !== 'function') {
+      G.Higanbana.overwriteCurrentProject = (params) => overwrite(params || {});
     }
-    if (typeof G.Higanbana.deleteProject !== 'function') {
-      G.Higanbana.deleteProject = (params) => deleteProject(params || {});
+    if (typeof G.Higanbana.importZipAndOverwriteProject !== 'function') {
+      G.Higanbana.importZipAndOverwriteProject = (params) => importZipAndOverwrite(params || {});
     }
-    if (typeof G.Higanbana.getProject !== 'function') {
-      G.Higanbana.getProject = (params) => getProject(params || {});
+    if (typeof G.Higanbana.importZipAndOverwriteCurrentProject !== 'function') {
+      G.Higanbana.importZipAndOverwriteCurrentProject = (params) => importZipAndOverwrite(params || {});
     }
-
     if (!G.higanbana || typeof G.higanbana !== 'object') G.higanbana = G.Higanbana;
   } catch {
     // ignore
@@ -560,30 +504,5 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     // ignore
   }
 })();
-</script>
-`;
-}
-
-export function injectHbHtmlRuntime(html: string, opts: HbHtmlRuntimeInjectOptions = {}): string {
-  const raw = String(html ?? '');
-  if (!raw.trim()) return raw;
-  if (raw.includes(MARKER)) return raw;
-
-  const injection = buildRuntimeScript(opts);
-
-  // 优先插入到 <head> 后（更早执行）
-  const headRe = /<head\\b[^>]*>/i;
-  if (headRe.test(raw)) {
-    return raw.replace(headRe, m => m + injection);
-  }
-
-  // 没有 head：插入到 <html> 后并补 head（尽量不改变 body 内容）
-  const htmlRe = /<html\\b[^>]*>/i;
-  if (htmlRe.test(raw)) {
-    return raw.replace(htmlRe, m => m + `<head>${injection}</head>`);
-  }
-
-  // Fragment/非完整文档：直接前置（浏览器会把它当作 head 内容解析）
-  return injection + raw;
-}
-
+<\/script>
+`}function f(t,r={}){const e=String(t??"");if(!e.trim()||e.includes(s))return e;const n=l(r),o=/<head\\b[^>]*>/i;if(o.test(e))return e.replace(o,a=>a+n);const i=/<html\\b[^>]*>/i;return i.test(e)?e.replace(i,a=>a+`<head>${n}</head>`):n+e}export{c as H,f as i};

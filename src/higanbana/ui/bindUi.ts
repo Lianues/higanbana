@@ -221,6 +221,24 @@ export function bindUi(): void {
     }
   });
 
+  $('#hb_projects_list').on('click', '[data-hb-action="copy_project_id"]', async (e: any) => {
+    const id = String((e.currentTarget as HTMLElement | null)?.getAttribute?.('data-project-id') ?? '').trim();
+    if (!id) return;
+    try {
+      await navigator.clipboard.writeText(id);
+      toastr.success('已复制项目 ID');
+    } catch (err) {
+      console.warn('[Higanbana] copy project id failed', err);
+      // 最小兜底：弹窗显示，便于手动复制
+      try {
+        window.prompt('复制失败，请手动复制项目 ID：', id);
+      } catch {
+        //
+      }
+      toastr.error('复制失败：浏览器未授予剪贴板权限');
+    }
+  });
+
   $('#hb_projects_list').on('click', '[data-hb-action="insert_placeholder"]', (e: any) => {
     const id = String((e.currentTarget as HTMLElement | null)?.getAttribute?.('data-project-id') ?? '').trim();
     if (!id) return;

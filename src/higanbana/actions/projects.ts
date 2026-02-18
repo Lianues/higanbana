@@ -7,6 +7,7 @@ import { renderProgressLine } from '../progress';
 import { getActiveCharacter, getCharacterAvatar, getStContext } from '../st';
 import { getSettings, saveSettings } from '../settings';
 import { refreshCharacterUi } from '../ui/panel';
+import { scheduleProcessAllDisplayedMessages } from '../render/placeholders';
 import { setStatus } from '../ui/status';
 import {
   downloadBlob,
@@ -362,6 +363,550 @@ export async function migrateEmbeddedProjectsToLocalInActiveCard({
   }
   refreshCharacterUi();
   return { totalEmbedded, migrated, importedCount, cancelled: false };
+}
+
+function resolveTargetProjectIndex(
+  projects: HiganbanaProject[],
+  targetProjectIdInput?: string,
+  targetZipSha256Input?: string,
+): number {
+  const targetProjectId = String(targetProjectIdInput ?? '').trim();
+  const targetZipSha256 = String(targetZipSha256Input ?? '').trim();
+
+  if (targetProjectId) {
+    const idx = projects.findIndex(p => p.id === targetProjectId);
+    if (idx < 0) throw new Error(`找不到目标项目：${targetProjectId}`);
+    return idx;
+  }
+
+  if (targetZipSha256) {
+    const indexes: number[] = [];
+    for (let i = 0; i < projects.length; i++) {
+      if (projects[i]?.zipSha256 === targetZipSha256) indexes.push(i);
+    }
+    if (indexes.length === 0) throw new Error(`找不到使用该 zipSha256 的项目：${targetZipSha256}`);
+    if (indexes.length > 1) {
+      throw new Error('存在多个项目使用相同 zipSha256，请传入 targetProjectId 精确指定目标项目');
+    }
+    return indexes[0];
+  }
+
+  throw new Error('缺少目标项目标识，请提供 targetProjectId 或 targetZipSha256');
+}
+
+export type OverwriteProjectInActiveCardInput = {
+  /** 优先使用项目 id 精确匹配 */
+  targetProjectId?: string;
+  /** 未指定 targetProjectId 时，可按 zipSha256 匹配（若命中多个会报错） */
+  targetZipSha256?: string;
+  /** 若不传则沿用原 source */
+  source?: HiganbanaProject['source'];
+  title?: string;
+  placeholder?: string;
+  homePage?: string;
+  showTitleInChat?: boolean;
+  fixRootRelativeUrls?: boolean;
+  zipName?: string;
+  zipSha256?: string;
+  zipUrl?: string;
+  zipBase64?: string;
+  reloadChat?: boolean;
+};
+
+export type OverwriteProjectInActiveCardResult = {
+  targetProjectId: string;
+  project: HiganbanaProject;
+};
+
+export async function overwriteProjectInActiveCard(
+  input: OverwriteProjectInActiveCardInput,
+): Promise<OverwriteProjectInActiveCardResult> {
+  const ctx = getStContext();
+  const { active, card } = getActiveCardOrThrow();
+
+  const targetIndex = resolveTargetProjectIndex(card.projects, input?.targetProjectId, input?.targetZipSha256);
+
+  const current = card.projects[targetIndex] as HiganbanaProject;
+  const sourceRaw = String(input?.source ?? current.source).trim();
+  const source = (sourceRaw === 'embedded' || sourceRaw === 'url' || sourceRaw === 'local' ? sourceRaw : '') as HiganbanaProject['source'];
+  if (!source) throw new Error(`非法 source：${sourceRaw}`);
+
+  const nextTitle = input?.title !== undefined ? String(input.title ?? '').trim() || undefined : current.title;
+  const nextPlaceholder = input?.placeholder !== undefined ? String(input.placeholder ?? '').trim() : current.placeholder;
+  const nextHomePage = input?.homePage !== undefined ? String(input.homePage ?? '').trim() : current.homePage;
+  const nextShowTitleInChat =
+    typeof input?.showTitleInChat === 'boolean' ? Boolean(input.showTitleInChat) : Boolean(current.showTitleInChat);
+  const nextFixRootRelativeUrls =
+    typeof input?.fixRootRelativeUrls === 'boolean' ? Boolean(input.fixRootRelativeUrls) : Boolean(current.fixRootRelativeUrls);
+  const nextZipName = input?.zipName !== undefined ? String(input.zipName ?? '').trim() : current.zipName;
+  const nextZipSha256 = input?.zipSha256 !== undefined ? String(input.zipSha256 ?? '').trim() : String(current.zipSha256 ?? '').trim();
+
+  if (!nextPlaceholder) throw new Error('placeholder 不能为空');
+  if (!nextHomePage) throw new Error('homePage 不能为空');
+  if (!nextZipName) throw new Error('zipName 不能为空');
+
+  const duplicatedPlaceholder = card.projects.some((p, i) => i !== targetIndex && p.placeholder === nextPlaceholder);
+  if (duplicatedPlaceholder) {
+    throw new Error(`占位符已被其它项目占用：${nextPlaceholder}`);
+  }
+
+  let nextProject: HiganbanaProject;
+  if (source === 'url') {
+    const nextZipUrl = input?.zipUrl !== undefined ? String(input.zipUrl ?? '').trim() : current.source === 'url' ? current.zipUrl : '';
+    if (!nextZipUrl) throw new Error('source=url 时 zipUrl 不能为空');
+    nextProject = {
+      source: 'url',
+      id: current.id,
+      title: nextTitle,
+      placeholder: nextPlaceholder,
+      homePage: nextHomePage,
+      showTitleInChat: nextShowTitleInChat,
+      fixRootRelativeUrls: nextFixRootRelativeUrls,
+      zipName: nextZipName,
+      zipSha256: nextZipSha256 || '',
+      zipUrl: nextZipUrl,
+    };
+  } else if (source === 'embedded') {
+    const nextZipBase64 =
+      input?.zipBase64 !== undefined ? String(input.zipBase64 ?? '').trim() : current.source === 'embedded' ? current.zipBase64 : '';
+    if (!nextZipBase64) throw new Error('source=embedded 时 zipBase64 不能为空');
+    if (!nextZipSha256) throw new Error('source=embedded 时 zipSha256 不能为空');
+    if (input?.zipBase64 !== undefined) {
+      const buf = await base64ToArrayBuffer(nextZipBase64);
+      assertEmbeddableZipSize(buf);
+    }
+    nextProject = {
+      source: 'embedded',
+      id: current.id,
+      title: nextTitle,
+      placeholder: nextPlaceholder,
+      homePage: nextHomePage,
+      showTitleInChat: nextShowTitleInChat,
+      fixRootRelativeUrls: nextFixRootRelativeUrls,
+      zipName: nextZipName,
+      zipSha256: nextZipSha256,
+      zipBase64: nextZipBase64,
+    };
+  } else {
+    if (!nextZipSha256) throw new Error('source=local 时 zipSha256 不能为空');
+    nextProject = {
+      source: 'local',
+      id: current.id,
+      title: nextTitle,
+      placeholder: nextPlaceholder,
+      homePage: nextHomePage,
+      showTitleInChat: nextShowTitleInChat,
+      fixRootRelativeUrls: nextFixRootRelativeUrls,
+      zipName: nextZipName,
+      zipSha256: nextZipSha256,
+    };
+  }
+
+  const nextProjects = [...card.projects];
+  nextProjects[targetIndex] = nextProject;
+  await writeCardData(active.chid, { projects: nextProjects });
+
+  if (input?.reloadChat !== false && ctx?.reloadCurrentChat) {
+    await ctx.reloadCurrentChat();
+  }
+  refreshCharacterUi();
+  scheduleProcessAllDisplayedMessages();
+  return { targetProjectId: current.id, project: nextProject };
+}
+
+export type ImportZipAndOverwriteProjectInActiveCardInput = {
+  targetProjectId?: string;
+  targetZipSha256?: string;
+  /** zip 二进制，推荐传 ArrayBuffer；也支持 Uint8Array */
+  zipArrayBuffer?: ArrayBuffer | Uint8Array;
+  /** 若未提供 zipArrayBuffer，可传 zip 的 base64 字符串（兼容字段） */
+  zipBase64?: string;
+  /** 推荐：明确表示“这是要导入的新 zip base64”，避免与覆盖 embedded.zipBase64 语义混淆 */
+  importZipBase64?: string;
+  zipName?: string;
+  preferredHomePage?: string;
+  homePage?: string;
+  fixRootRelativeUrls?: boolean;
+  /** 若不传则沿用原 source */
+  source?: HiganbanaProject['source'];
+  /** source=url 且从非 url 项目切换时需要提供 */
+  zipUrl?: string;
+  /** source=embedded 时，默认会把新 zip 写回角色卡（zipBase64） */
+  persistEmbeddedToCard?: boolean;
+  reloadChat?: boolean;
+};
+
+export type ImportZipAndOverwriteProjectInActiveCardResult = {
+  targetProjectId: string;
+  project: HiganbanaProject;
+  imported: {
+    projectId: string;
+    homePage: string;
+    fileCount: number;
+    cacheName: string;
+  };
+};
+
+function toSafeArrayBuffer(data: ArrayBuffer | Uint8Array): ArrayBuffer {
+  if (data instanceof Uint8Array) {
+    const out = new Uint8Array(data.byteLength);
+    out.set(data);
+    return out.buffer;
+  }
+  const src = new Uint8Array(data);
+  const out = new Uint8Array(src.byteLength);
+  out.set(src);
+  return out.buffer;
+}
+
+async function normalizeZipInputToArrayBuffer(input: ImportZipAndOverwriteProjectInActiveCardInput): Promise<ArrayBuffer> {
+  if (input?.zipArrayBuffer instanceof ArrayBuffer || input?.zipArrayBuffer instanceof Uint8Array) {
+    return toSafeArrayBuffer(input.zipArrayBuffer);
+  }
+  const zipBase64 = String(input?.importZipBase64 ?? input?.zipBase64 ?? '').trim();
+  if (zipBase64) {
+    return await base64ToArrayBuffer(zipBase64);
+  }
+  throw new Error('缺少 zip 数据，请提供 zipArrayBuffer 或 zipBase64');
+}
+
+export async function importZipAndOverwriteProjectInActiveCard(
+  input: ImportZipAndOverwriteProjectInActiveCardInput,
+): Promise<ImportZipAndOverwriteProjectInActiveCardResult> {
+  const { card } = getActiveCardOrThrow();
+  const targetIndex = resolveTargetProjectIndex(card.projects, input?.targetProjectId, input?.targetZipSha256);
+  const current = card.projects[targetIndex] as HiganbanaProject;
+
+  const zipArrayBuffer = await normalizeZipInputToArrayBuffer(input);
+  const fixRootRelativeUrls =
+    typeof input?.fixRootRelativeUrls === 'boolean' ? Boolean(input.fixRootRelativeUrls) : Boolean(current.fixRootRelativeUrls);
+  const preferredHomePage = String(input?.preferredHomePage ?? input?.homePage ?? current.homePage ?? '').trim() || undefined;
+
+  setStatus('正在导入新 zip 并写入 VFS 缓存...');
+  const imported = await importZipArrayBufferToVfs(extensionBase, zipArrayBuffer, {
+    fixRootRelativeUrls,
+    preferredHomePage,
+  });
+  cachedProjectIds.add(imported.projectId);
+  await refreshCachedProjects();
+
+  const sourceRaw = String(input?.source ?? current.source).trim();
+  const source = (sourceRaw === 'embedded' || sourceRaw === 'url' || sourceRaw === 'local' ? sourceRaw : '') as HiganbanaProject['source'];
+  if (!source) throw new Error(`非法 source：${sourceRaw}`);
+
+  const overwriteInput: OverwriteProjectInActiveCardInput = {
+    targetProjectId: current.id,
+    source,
+    zipName: input?.zipName !== undefined ? String(input.zipName ?? '').trim() : current.zipName,
+    homePage: imported.homePage,
+    zipSha256: imported.projectId,
+    fixRootRelativeUrls,
+    reloadChat: input?.reloadChat,
+  };
+
+  if (source === 'url' && input?.zipUrl !== undefined) {
+    overwriteInput.zipUrl = String(input.zipUrl ?? '').trim();
+  }
+
+  if (source === 'embedded') {
+    const persistEmbeddedToCard = input?.persistEmbeddedToCard !== false;
+    if (!persistEmbeddedToCard) {
+      throw new Error('source=embedded 时必须写入 zipBase64；若不希望写入角色卡，请将 source 设为 local');
+    }
+    assertEmbeddableZipSize(zipArrayBuffer);
+    overwriteInput.zipBase64 = input?.zipBase64 !== undefined ? String(input.zipBase64 ?? '').trim() : await arrayBufferToBase64(zipArrayBuffer);
+  }
+
+  const overwritten = await overwriteProjectInActiveCard(overwriteInput);
+  setStatus(
+    `已覆盖项目 zip。\n项目：${overwritten.project.title || overwritten.project.zipName}\nprojectId(sha256)：${imported.projectId}\n入口：${imported.homePage}\n文件数：${imported.fileCount}`,
+  );
+  return { targetProjectId: overwritten.targetProjectId, project: overwritten.project, imported };
+}
+
+export type UpdateProjectInActiveCardInput = OverwriteProjectInActiveCardInput & {
+  /** 若提供 zip 数据，则会先导入新 zip 并覆盖项目的 zipSha256/homePage */
+  zipArrayBuffer?: ArrayBuffer | Uint8Array;
+  /** 推荐字段：导入 zip 的 base64。存在时会触发“导入 + 覆盖”流程 */
+  importZipBase64?: string;
+  preferredHomePage?: string;
+  persistEmbeddedToCard?: boolean;
+};
+
+export type UpdateProjectInActiveCardResult = {
+  targetProjectId: string;
+  project: HiganbanaProject;
+  imported?: {
+    projectId: string;
+    homePage: string;
+    fileCount: number;
+    cacheName: string;
+  };
+};
+
+export async function updateProjectInActiveCard(input: UpdateProjectInActiveCardInput): Promise<UpdateProjectInActiveCardResult> {
+  const hasZipArrayBuffer = input?.zipArrayBuffer instanceof ArrayBuffer || input?.zipArrayBuffer instanceof Uint8Array;
+  const hasImportZipBase64 = String(input?.importZipBase64 ?? '').trim().length > 0;
+  if (hasZipArrayBuffer || hasImportZipBase64) {
+    return await importZipAndOverwriteProjectInActiveCard({ ...(input as any), zipBase64: undefined });
+  }
+  return await overwriteProjectInActiveCard(input);
+}
+
+function cloneProject(project: HiganbanaProject): HiganbanaProject {
+  if (project.source === 'embedded') {
+    return { ...project, source: 'embedded', zipBase64: String(project.zipBase64 ?? '') };
+  }
+  if (project.source === 'url') {
+    return { ...project, source: 'url', zipUrl: String(project.zipUrl ?? '') };
+  }
+  return { ...project, source: 'local' };
+}
+
+export type GetProjectInActiveCardInput = {
+  targetProjectId?: string;
+  targetZipSha256?: string;
+  /** true 时返回全部项目（忽略 target） */
+  includeAll?: boolean;
+};
+
+export type GetProjectInActiveCardResult = {
+  projects: HiganbanaProject[];
+  project?: HiganbanaProject;
+};
+
+export function getProjectInActiveCard(input: GetProjectInActiveCardInput = {}): GetProjectInActiveCardResult {
+  const { card } = getActiveCardOrThrow();
+  const projects = card.projects.map(cloneProject);
+
+  const includeAll = Boolean(input?.includeAll);
+  const targetProjectId = String(input?.targetProjectId ?? '').trim();
+  const targetZipSha256 = String(input?.targetZipSha256 ?? '').trim();
+  if (includeAll || (!targetProjectId && !targetZipSha256)) {
+    return { projects };
+  }
+
+  const idx = resolveTargetProjectIndex(card.projects, targetProjectId, targetZipSha256);
+  return {
+    projects,
+    project: cloneProject(card.projects[idx] as HiganbanaProject),
+  };
+}
+
+export type DeleteProjectInActiveCardInput = {
+  targetProjectId?: string;
+  targetZipSha256?: string;
+  reloadChat?: boolean;
+};
+
+export type DeleteProjectInActiveCardResult = {
+  deletedProjectId: string;
+  deletedProject: HiganbanaProject;
+  remainingCount: number;
+};
+
+export async function deleteProjectInActiveCard(input: DeleteProjectInActiveCardInput): Promise<DeleteProjectInActiveCardResult> {
+  const ctx = getStContext();
+  const { active, card } = getActiveCardOrThrow();
+  const targetIndex = resolveTargetProjectIndex(card.projects, input?.targetProjectId, input?.targetZipSha256);
+  const deletedProject = card.projects[targetIndex] as HiganbanaProject;
+
+  const nextProjects = card.projects.filter((_p, idx) => idx !== targetIndex);
+  await writeCardData(active.chid, { projects: nextProjects });
+
+  if (input?.reloadChat !== false && ctx?.reloadCurrentChat) {
+    await ctx.reloadCurrentChat();
+  }
+  refreshCharacterUi();
+  scheduleProcessAllDisplayedMessages();
+  setStatus(`已删除项目：${deletedProject.title || deletedProject.zipName}`);
+
+  return {
+    deletedProjectId: deletedProject.id,
+    deletedProject: cloneProject(deletedProject),
+    remainingCount: nextProjects.length,
+  };
+}
+
+export type CreateProjectInActiveCardInput = {
+  source?: HiganbanaProject['source'];
+  title?: string;
+  placeholder?: string;
+  homePage?: string;
+  showTitleInChat?: boolean;
+  fixRootRelativeUrls?: boolean;
+  zipName?: string;
+  zipSha256?: string;
+  zipUrl?: string;
+  zipBase64?: string;
+  zipArrayBuffer?: ArrayBuffer | Uint8Array;
+  importZipBase64?: string;
+  preferredHomePage?: string;
+  persistEmbeddedToCard?: boolean;
+  reloadChat?: boolean;
+};
+
+export type CreateProjectInActiveCardResult = {
+  project: HiganbanaProject;
+  imported?: {
+    projectId: string;
+    homePage: string;
+    fileCount: number;
+    cacheName: string;
+  };
+};
+
+export async function createProjectInActiveCard(input: CreateProjectInActiveCardInput): Promise<CreateProjectInActiveCardResult> {
+  const ctx = getStContext();
+  const { active, card } = getActiveCardOrThrow();
+  const settings = getSettings();
+
+  const hasZipArrayBuffer = input?.zipArrayBuffer instanceof ArrayBuffer || input?.zipArrayBuffer instanceof Uint8Array;
+  const hasImportZipBase64 = String(input?.importZipBase64 ?? '').trim().length > 0;
+  const hasImportZip = hasZipArrayBuffer || hasImportZipBase64;
+
+  const inferredSource = hasImportZip
+    ? 'local'
+    : String(input?.zipUrl ?? '').trim()
+      ? 'url'
+      : String(input?.zipBase64 ?? '').trim()
+        ? 'embedded'
+        : 'local';
+  const sourceRaw = String(input?.source ?? inferredSource).trim();
+  const source = (sourceRaw === 'embedded' || sourceRaw === 'url' || sourceRaw === 'local' ? sourceRaw : '') as HiganbanaProject['source'];
+  if (!source) throw new Error(`非法 source：${sourceRaw}`);
+
+  const desiredPlaceholder = normalizePlaceholderInput(input?.placeholder ?? '');
+  const placeholderBase = desiredPlaceholder || settings.placeholder;
+  const placeholder = ensureUniquePlaceholder(card.projects, placeholderBase);
+
+  let projectId = generateProjectId();
+  while (card.projects.some(p => p.id === projectId)) {
+    projectId = generateProjectId();
+  }
+
+  const title = String(input?.title ?? '').trim() || undefined;
+  const showTitleInChat = typeof input?.showTitleInChat === 'boolean' ? Boolean(input.showTitleInChat) : false;
+  const fixRootRelativeUrls =
+    typeof input?.fixRootRelativeUrls === 'boolean' ? Boolean(input.fixRootRelativeUrls) : Boolean(settings.defaultFixRootRelativeUrls);
+
+  const zipUrl = String(input?.zipUrl ?? '').trim();
+  let zipName = String(input?.zipName ?? '').trim();
+  let homePage = String(input?.homePage ?? '').trim();
+  let zipSha256 = String(input?.zipSha256 ?? '').trim();
+  let embeddedZipBase64 = String(input?.zipBase64 ?? '').trim();
+  let imported: CreateProjectInActiveCardResult['imported'] | undefined;
+
+  if (hasImportZip) {
+    const zipArrayBuffer = await normalizeZipInputToArrayBuffer(input as ImportZipAndOverwriteProjectInActiveCardInput);
+    const preferredHomePage = String(input?.preferredHomePage ?? input?.homePage ?? '').trim() || undefined;
+    setStatus('正在导入新 zip 并创建项目...');
+    const importedResult = await importZipArrayBufferToVfs(extensionBase, zipArrayBuffer, {
+      fixRootRelativeUrls,
+      preferredHomePage,
+    });
+    cachedProjectIds.add(importedResult.projectId);
+    await refreshCachedProjects();
+
+    imported = {
+      projectId: importedResult.projectId,
+      homePage: importedResult.homePage,
+      fileCount: importedResult.fileCount,
+      cacheName: importedResult.cacheName,
+    };
+    zipSha256 = importedResult.projectId;
+    homePage = importedResult.homePage;
+
+    if (source === 'embedded') {
+      const persistEmbeddedToCard = input?.persistEmbeddedToCard !== false;
+      if (!persistEmbeddedToCard) {
+        throw new Error('source=embedded 时必须写入 zipBase64；若不希望写入角色卡，请将 source 设为 local');
+      }
+      assertEmbeddableZipSize(zipArrayBuffer);
+      if (!embeddedZipBase64) {
+        embeddedZipBase64 = await arrayBufferToBase64(zipArrayBuffer);
+      }
+    }
+  }
+
+  if (source === 'url' && !zipUrl) {
+    throw new Error('source=url 时 zipUrl 不能为空');
+  }
+
+  if (!zipName) {
+    if (source === 'url') {
+      zipName = zipUrl ? guessZipNameFromUrl(zipUrl) : 'webzip.zip';
+    } else {
+      zipName = 'webzip.zip';
+    }
+  }
+  if (!homePage) homePage = 'index.html';
+
+  let project: HiganbanaProject;
+  if (source === 'embedded') {
+    if (!embeddedZipBase64) {
+      throw new Error('source=embedded 时 zipBase64 不能为空（可改传 zipArrayBuffer/importZipBase64 自动导入）');
+    }
+    if (!zipSha256) {
+      throw new Error('source=embedded 时 zipSha256 不能为空（可改传 zipArrayBuffer/importZipBase64 自动生成）');
+    }
+    if (!hasImportZip) {
+      const buf = await base64ToArrayBuffer(embeddedZipBase64);
+      assertEmbeddableZipSize(buf);
+    }
+    project = {
+      source: 'embedded',
+      id: projectId,
+      title,
+      placeholder,
+      homePage,
+      showTitleInChat,
+      fixRootRelativeUrls,
+      zipName,
+      zipSha256,
+      zipBase64: embeddedZipBase64,
+    };
+  } else if (source === 'url') {
+    project = {
+      source: 'url',
+      id: projectId,
+      title,
+      placeholder,
+      homePage,
+      showTitleInChat,
+      fixRootRelativeUrls,
+      zipName,
+      zipSha256: zipSha256 || '',
+      zipUrl,
+    };
+  } else {
+    if (!zipSha256) {
+      throw new Error('source=local 时 zipSha256 不能为空（可改传 zipArrayBuffer/importZipBase64 自动导入）');
+    }
+    project = {
+      source: 'local',
+      id: projectId,
+      title,
+      placeholder,
+      homePage,
+      showTitleInChat,
+      fixRootRelativeUrls,
+      zipName,
+      zipSha256,
+    };
+  }
+
+  const nextProjects = [...card.projects, project];
+  await writeCardData(active.chid, { projects: nextProjects });
+
+  if (input?.reloadChat !== false && ctx?.reloadCurrentChat) {
+    await ctx.reloadCurrentChat();
+  }
+  refreshCharacterUi();
+  scheduleProcessAllDisplayedMessages();
+  setStatus(`已创建项目：${project.title || project.zipName}\n项目ID：${project.id}\n占位符：${project.placeholder}`);
+
+  return { project: cloneProject(project), imported };
 }
 
 export async function importActiveCardWebzipToCache({

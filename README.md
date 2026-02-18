@@ -11,6 +11,7 @@ SillyTavern 扩展「彼岸花」，提供 **Zip 前端沙盒渲染**：用户�
 - **HTML 代码块渲染**：消息中的 HTML 代码块（\`\`\`html ... \`\`\`）在设置开启时，以独立 blob URL 在 iframe 中沙盒渲染，可配置是否显示标题栏等。
 - **资源复用**：同一项目在多个占位符或多次出现时，共用同一份 Cache 与 VFS 路径，由 Service Worker 统一拦截并返回 zip 内资源。
 - **URL 绑定**：支持仅保存 zip 的 URL，进入聊天时再下载并显示进度，支持取消；也可在面板内重新下载并应用。
+- **项目自管理 API（CRUD）**：在 WebZip 页面内可调用 `window.Higanbana.getProject / createProject / updateProject / deleteProject` 管理项目。
 
 ---
 
@@ -65,3 +66,49 @@ higanbana/                    # 项目根目录
 - 项目增删改由 `actions/projects.ts` 处理，缺缓存时由 `popup/missingProjects.ts` 提示并支持下载队列。
 
 此文档便于从项目根目录了解彼岸花的结构与构建方式。
+
+---
+
+## 项目内可用的管理函数（运行时注入）
+
+在由彼岸花渲染的 WebZip 页面里，可直接调用：
+
+```js
+// 1) 覆盖“当前项目”（默认按当前页面的 /vfs/<zipSha256>/... 推导目标）
+await window.Higanbana.updateProject({
+  title: '新标题',
+  homePage: 'index.html',
+  source: 'local',
+  zipSha256: '新的sha256',
+});
+
+// 2) 覆盖“指定项目”（优先用 targetProjectId 精确定位）
+await window.Higanbana.updateProject({
+  targetProjectId: 'project-uuid',
+  placeholder: '{{WEB_APP2}}',
+  showTitleInChat: true,
+});
+
+// 3) 导入“新的 zip”并覆盖当前项目（推荐用于项目自更新）
+const buf = await (await fetch('/update/app.zip')).arrayBuffer();
+await window.Higanbana.updateProject({
+  zipArrayBuffer: buf,
+  zipName: 'app.zip',
+  source: 'local', // 建议 local，避免把 zipBase64 写入角色卡
+  preferredHomePage: 'index.html',
+});
+
+// 4) 指定项目 + zipBlob 也可（会先导入 zip，再覆盖）
+await window.Higanbana.updateProject({
+  targetProjectId: 'project-uuid',
+  zipBlob: fileInput.files[0],
+  source: 'local',
+});
+
+// 5) 纯文本场景可用 importZipBase64
+await window.Higanbana.updateProject({ importZipBase64: 'UEsDB...' });
+```
+
+说明：调用后会写回当前激活角色卡的 `extensions.higanbana.projects`，并触发 UI 刷新（默认会刷新当前聊天）。`source=embedded` 时会写入 `zipBase64`，且受 20MB 上限约束。
+
+更多 CRUD 接口与输入/输出示例见：`docs/API接口说明.md`

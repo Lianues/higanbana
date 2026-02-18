@@ -1,38 +1,14 @@
-export const HB_HTML_BRIDGE_CHANNEL = 'hb_higanbana_html_bridge_v1';
-
-export type HbHtmlRuntimeInjectOptions = {
-  /**
-   * SillyTavern 的 origin（例如 http://127.0.0.1:8000）。
-   * - 普通页面可留空，运行时会从 location 推导
-   * - blob 页面建议传入，避免相对 URL 解析到 blob: scheme
-   */
-  origin?: string;
-  /**
-   * 是否强制注入/修复 <base href="...">。
-   * - blob 页面中 root-relative（/xxx）在部分浏览器/场景会被解析到 blob:，导致资源加载失败
-   * - VFS 页面（WebZip）不应开启，否则会破坏项目自身的相对资源路径
-   */
-  forceBaseHref?: boolean;
-};
-
-const MARKER = '/*__HB_HTML_COMPAT__*/';
-
-function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
-  const origin = String(opts.origin ?? '').trim();
-  const forceBaseHref = Boolean(opts.forceBaseHref);
-
-  // NOTE: 这里必须是纯字符串注入，不依赖任何构建时 import（要能在任意 HTML 中独立运行）
-  return `
-<script>${MARKER}
+const c="hb_higanbana_html_bridge_v1",s="/*__HB_HTML_COMPAT__*/";function l(t){const r=String(t.origin??"").trim(),e=!!t.forceBaseHref;return`
+<script>${s}
 (() => {
   const G = globalThis;
   const KEY = '__HB_HTML_COMPAT_RUNTIME__';
   if (G[KEY]) return;
   G[KEY] = { v: 1 };
 
-  const CHANNEL = ${JSON.stringify(HB_HTML_BRIDGE_CHANNEL)};
-  const FORCE_BASE = ${forceBaseHref ? 'true' : 'false'};
-  const INJECTED_ORIGIN = ${JSON.stringify(origin)};
+  const CHANNEL = ${JSON.stringify(c)};
+  const FORCE_BASE = ${e?"true":"false"};
+  const INJECTED_ORIGIN = ${JSON.stringify(r)};
 
   // 推导 SillyTavern origin（用于 blob/sandbox 场景的绝对 URL 构造）
   const deriveOrigin = () => {
@@ -414,7 +390,7 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     const parseCurrentZipSha256 = () => {
       try {
         const pathname = String(location.pathname || '');
-        const m = pathname.match(/\/vfs\/([^/]+)\//);
+        const m = pathname.match(//vfs/([^/]+)//);
         if (!m || !m[1]) return '';
         return decodeURIComponent(m[1]);
       } catch {
@@ -560,30 +536,5 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     // ignore
   }
 })();
-</script>
-`;
-}
-
-export function injectHbHtmlRuntime(html: string, opts: HbHtmlRuntimeInjectOptions = {}): string {
-  const raw = String(html ?? '');
-  if (!raw.trim()) return raw;
-  if (raw.includes(MARKER)) return raw;
-
-  const injection = buildRuntimeScript(opts);
-
-  // 优先插入到 <head> 后（更早执行）
-  const headRe = /<head\\b[^>]*>/i;
-  if (headRe.test(raw)) {
-    return raw.replace(headRe, m => m + injection);
-  }
-
-  // 没有 head：插入到 <html> 后并补 head（尽量不改变 body 内容）
-  const htmlRe = /<html\\b[^>]*>/i;
-  if (htmlRe.test(raw)) {
-    return raw.replace(htmlRe, m => m + `<head>${injection}</head>`);
-  }
-
-  // Fragment/非完整文档：直接前置（浏览器会把它当作 head 内容解析）
-  return injection + raw;
-}
-
+<\/script>
+`}function f(t,r={}){const e=String(t??"");if(!e.trim()||e.includes(s))return e;const a=l(r),o=/<head\\b[^>]*>/i;if(o.test(e))return e.replace(o,n=>n+a);const i=/<html\\b[^>]*>/i;return i.test(e)?e.replace(i,n=>n+`<head>${a}</head>`):a+e}export{c as H,f as i};

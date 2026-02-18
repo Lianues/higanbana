@@ -1,4 +1,10 @@
 import { HB_HTML_BRIDGE_CHANNEL } from '../hbHtmlRuntime';
+import {
+  createProjectInActiveCard,
+  deleteProjectInActiveCard,
+  getProjectInActiveCard,
+  updateProjectInActiveCard,
+} from './actions/projects';
 import { getStContext } from './st';
 
 type HbBridgeReq = {
@@ -6,7 +12,7 @@ type HbBridgeReq = {
   v: 1;
   kind: 'req';
   id: string;
-  op: 'getCsrfToken' | 'callSTAPI';
+  op: 'getCsrfToken' | 'callSTAPI' | 'getProject' | 'createProject' | 'updateProject' | 'deleteProject';
   payload?: any;
 };
 
@@ -53,7 +59,48 @@ function applyIframeHeightByName(iframeName: string, height: number): void {
   }
 }
 
-async function handleReq(req: HbBridgeReq): Promise<HbBridgeRes> {
+function parseZipSha256FromVfsLikeUrl(urlLike: string): string {
+  const text = String(urlLike ?? '').trim();
+  if (!text) return '';
+  try {
+    const u = new URL(text, window.location.origin);
+    const m = u.pathname.match(/\/vfs\/([^/]+)\//);
+    return m?.[1] ? decodeURIComponent(m[1]) : '';
+  } catch {
+    return '';
+  }
+}
+
+function resolveProjectHintFromSourceWindow(sourceWindow?: Window | null): { projectId: string; zipSha256: string } {
+  if (!sourceWindow) return { projectId: '', zipSha256: '' };
+
+  try {
+    const iframes = document.querySelectorAll('iframe.hb-iframe');
+    for (const el of iframes) {
+      const iframe = el as HTMLIFrameElement;
+      if (iframe.contentWindow !== sourceWindow) continue;
+
+      const embed = iframe.closest('.hb-embed') as HTMLElement | null;
+      const projectId = String((embed as any)?.dataset?.hbProjectId ?? '').trim();
+      const vfsHomeUrl = String((iframe as any)?.dataset?.hbVfsHomeUrl ?? iframe.src ?? '').trim();
+      const zipSha256 = parseZipSha256FromVfsLikeUrl(vfsHomeUrl);
+      return { projectId, zipSha256 };
+    }
+  } catch {
+    //
+  }
+
+  try {
+    // 新标签页直接打开 VFS 时，没有外层 hb-iframe，可尝试从来源窗口 URL 推导 zipSha256。
+    const href = String((sourceWindow as any)?.location?.href ?? '');
+    const zipSha256 = parseZipSha256FromVfsLikeUrl(href);
+    return { projectId: '', zipSha256 };
+  } catch {
+    return { projectId: '', zipSha256: '' };
+  }
+}
+
+async function handleReq(req: HbBridgeReq, sourceWindow?: Window | null): Promise<HbBridgeRes> {
   const id = String(req?.id || '');
   const base: HbBridgeRes = { __hb: 'higanbana', v: 1, kind: 'res', id, ok: false };
 
@@ -71,6 +118,94 @@ async function handleReq(req: HbBridgeReq): Promise<HbBridgeRes> {
       const data = await resp.json().catch(() => null);
       const t = data && typeof data === 'object' ? String((data as any).token || '') : '';
       return { ...base, ok: true, data: t };
+    } catch (e: any) {
+      return { ...base, error: e?.message ? String(e.message) : String(e) };
+    }
+  }
+
+  if (req.op === 'getProject') {
+    try {
+      const payload = req?.payload && typeof req.payload === 'object' ? req.payload : {};
+      const hint = resolveProjectHintFromSourceWindow(sourceWindow);
+
+      const includeAll = Boolean((payload as any).includeAll);
+      const targetProjectIdRaw = String((payload as any).targetProjectId ?? '').trim();
+      const targetZipSha256Raw = String((payload as any).targetZipSha256 ?? '').trim();
+
+      const result = getProjectInActiveCard({
+        ...(payload as any),
+        includeAll,
+        targetProjectId: includeAll ? targetProjectIdRaw || undefined : targetProjectIdRaw || hint.projectId || undefined,
+        targetZipSha256: includeAll ? targetZipSha256Raw || undefined : targetZipSha256Raw || hint.zipSha256 || undefined,
+      });
+
+      return {
+        ...base,
+        ok: true,
+        data: result,
+      };
+    } catch (e: any) {
+      return { ...base, error: e?.message ? String(e.message) : String(e) };
+    }
+  }
+
+  if (req.op === 'createProject') {
+    try {
+      const payload = req?.payload && typeof req.payload === 'object' ? req.payload : {};
+      const result = await createProjectInActiveCard(payload as any);
+      return {
+        ...base,
+        ok: true,
+        data: result,
+      };
+    } catch (e: any) {
+      return { ...base, error: e?.message ? String(e.message) : String(e) };
+    }
+  }
+
+  if (req.op === 'deleteProject') {
+    try {
+      const payload = req?.payload && typeof req.payload === 'object' ? req.payload : {};
+      const hint = resolveProjectHintFromSourceWindow(sourceWindow);
+
+      const targetProjectIdRaw = String((payload as any).targetProjectId ?? '').trim();
+      const targetZipSha256Raw = String((payload as any).targetZipSha256 ?? '').trim();
+
+      const result = await deleteProjectInActiveCard({
+        ...(payload as any),
+        targetProjectId: targetProjectIdRaw || hint.projectId || undefined,
+        targetZipSha256: targetZipSha256Raw || hint.zipSha256 || undefined,
+      });
+
+      return {
+        ...base,
+        ok: true,
+        data: result,
+      };
+    } catch (e: any) {
+      return { ...base, error: e?.message ? String(e.message) : String(e) };
+    }
+  }
+
+  if (req.op === 'updateProject') {
+    try {
+      const payload = req?.payload && typeof req.payload === 'object' ? req.payload : {};
+      const hint = resolveProjectHintFromSourceWindow(sourceWindow);
+
+      const targetProjectIdRaw = String((payload as any).targetProjectId ?? '').trim();
+      const targetZipSha256Raw = String((payload as any).targetZipSha256 ?? '').trim();
+
+      const result = await updateProjectInActiveCard({
+        ...(payload as any),
+        targetProjectId: targetProjectIdRaw || hint.projectId || undefined,
+        targetZipSha256: targetZipSha256Raw || hint.zipSha256 || undefined,
+      });
+
+      return {
+        ...base,
+        ok: true,
+        data: result,
+      };
     } catch (e: any) {
       return { ...base, error: e?.message ? String(e.message) : String(e) };
     }
@@ -106,6 +241,9 @@ export function installHbHtmlBridge(): void {
   if (G.__HB_HTML_BRIDGE_SERVER__) return;
   G.__HB_HTML_BRIDGE_SERVER__ = { v: 1 };
 
+  const handledReqIds = new Map<string, number>();
+  const HANDLED_REQ_TTL_MS = 5 * 60 * 1000;
+
   let bc: BroadcastChannel | null = null;
   try {
     bc = new BroadcastChannel(HB_HTML_BRIDGE_CHANNEL);
@@ -133,7 +271,33 @@ export function installHbHtmlBridge(): void {
     // bridge RPC
     if (data.__hb !== 'higanbana' || data.v !== 1 || data.kind !== 'req') return;
     const req = data as HbBridgeReq;
-    const res = await handleReq(req);
+    const reqId = String(req.id || '');
+
+    if ((req.op === 'updateProject' || req.op === 'deleteProject') && !sourceWindow) {
+      const payload = req?.payload && typeof req.payload === 'object' ? req.payload : {};
+      const targetProjectId = String((payload as any).targetProjectId ?? '').trim();
+      const targetZipSha256 = String((payload as any).targetZipSha256 ?? '').trim();
+      const allowBcZipTarget = Boolean((payload as any).__hbAllowBroadcastZipTarget);
+      // BroadcastChannel 分支无法可靠推断“当前项目”；优先等待 postMessage 分支（它有 sourceWindow，可反查 projectId）。
+      // 若仅在 BroadcastChannel 可通信（如 noopener 新标签页），允许按 targetZipSha256 继续处理。
+      if (!targetProjectId && !(allowBcZipTarget && targetZipSha256)) {
+        return;
+      }
+    }
+
+    if (!reqId) return;
+
+    // 同一个请求会同时走 BroadcastChannel + postMessage，避免重复执行有副作用的操作（如覆盖项目）。
+    const now = Date.now();
+    for (const [k, t] of handledReqIds) {
+      if (now - t > HANDLED_REQ_TTL_MS) handledReqIds.delete(k);
+    }
+    if (handledReqIds.has(reqId)) {
+      return;
+    }
+    handledReqIds.set(reqId, now);
+
+    const res = await handleReq(req, sourceWindow ?? null);
 
     // Reply via BroadcastChannel (works for new tabs) and also back to direct sender (works for iframes)
     postToBc(res);

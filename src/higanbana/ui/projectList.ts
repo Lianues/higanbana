@@ -65,6 +65,31 @@ export function renderProjectsList(projects: HiganbanaProject[]): void {
       body.appendChild(row);
     }
 
+    // Project ID (readonly)
+    {
+      const row = mkRow('项目 ID');
+      const input = document.createElement('input');
+      input.className = 'text_pole hb-proj-id';
+      input.type = 'text';
+      input.readOnly = true;
+      input.spellcheck = false;
+      input.value = proj.id;
+      input.dataset.projectId = proj.id;
+      row.appendChild(input);
+
+      const actions = document.createElement('div');
+      actions.className = 'hb-actions';
+      const btnCopy = document.createElement('button');
+      btnCopy.className = 'menu_button';
+      btnCopy.type = 'button';
+      btnCopy.dataset.hbAction = 'copy_project_id';
+      btnCopy.dataset.projectId = proj.id;
+      btnCopy.textContent = '复制 ID';
+      actions.appendChild(btnCopy);
+      row.appendChild(actions);
+      body.appendChild(row);
+    }
+
     // Placeholder (editable) + actions
     {
       const row = mkRow('占位符');
