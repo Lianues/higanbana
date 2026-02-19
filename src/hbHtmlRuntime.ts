@@ -192,6 +192,54 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     }
   };
 
+  const inferCurrentZipSha256 = () => {
+    try {
+      const pathname = String(location.pathname || '');
+      const m = pathname.match(/\/vfs\/([^/]+)\//);
+      if (!m || !m[1]) return '';
+      return decodeURIComponent(m[1]);
+    } catch {
+      return '';
+    }
+  };
+
+  const isPlainObject = value => {
+    if (!value || typeof value !== 'object') return false;
+    const tag = Object.prototype.toString.call(value);
+    return tag === '[object Object]';
+  };
+
+  const prepareBridgeArgs = (root, path, args) => {
+    const rawArgs = Array.isArray(args) ? args : [];
+    const targetMethods = new Set(['getProject', 'updateProject', 'deleteProject']);
+
+    let methodName = '';
+    if ((root === 'Higanbana' || root === 'higanbana') && path.length >= 1) {
+      methodName = String(path[0] || '');
+    } else if (
+      root === '__HB_GLOBAL__' &&
+      path.length >= 2 &&
+      (String(path[0] || '') === 'Higanbana' || String(path[0] || '') === 'higanbana')
+    ) {
+      methodName = String(path[1] || '');
+    }
+
+    if (!targetMethods.has(methodName)) return rawArgs;
+
+    const inferred = inferCurrentZipSha256();
+    if (!inferred) return rawArgs;
+
+    const first = rawArgs[0];
+    if (first === undefined) {
+      return [{ __hbCurrentZipSha256: inferred }];
+    }
+    if (!isPlainObject(first)) return rawArgs;
+    if (first.targetProjectId || first.targetZipSha256 || first.__hbCurrentZipSha256) return rawArgs;
+
+    const patched = { ...first, __hbCurrentZipSha256: inferred };
+    return [patched, ...rawArgs.slice(1)];
+  };
+
   const createBridgeProxy = (root, path = []) => {
     const fn = function () {};
     return new Proxy(fn, {
@@ -208,7 +256,8 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
         return createBridgeProxy(root, path.concat(String(prop)));
       },
       apply(_t, _thisArg, args) {
-        return callBridgeRpc(root, path, args);
+        const patchedArgs = prepareBridgeArgs(root, path, args);
+        return callBridgeRpc(root, path, patchedArgs);
       },
     });
   };

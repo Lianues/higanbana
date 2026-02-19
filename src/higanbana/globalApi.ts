@@ -24,8 +24,16 @@ function normalizePayload<T extends AnyRecord>(params: unknown): T {
 
 function withCurrentTargetFallback<T extends AnyRecord>(payload: T): T {
   if (!payload.targetProjectId && !payload.targetZipSha256) {
-    const zipSha256 = parseCurrentZipSha256();
+    // 兼容桥接场景：
+    // - 直连调用时，读取当前 window.location.pathname
+    // - RPC 桥接调用时，优先使用调用端注入的 __hbCurrentZipSha256
+    const zipSha256 = String(payload.__hbCurrentZipSha256 ?? '').trim() || parseCurrentZipSha256();
     if (zipSha256) payload.targetZipSha256 = zipSha256;
+  }
+  try {
+    delete payload.__hbCurrentZipSha256;
+  } catch {
+    // ignore
   }
   return payload;
 }

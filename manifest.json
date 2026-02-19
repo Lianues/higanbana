@@ -7,7 +7,7 @@
   "js": "dist/index.js",
   "css": "dist/index.css",
   "author": "Limerence",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "homePage": "",
   "auto_update": true
 }
