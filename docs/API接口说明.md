@@ -25,9 +25,20 @@
 
 运行模型说明：
 
-- 当前为**纯同源直连模型**。
-- 运行时会直接复用 `parent/top/opener` 的同源全局对象（`SillyTavern` / `ST_API` / `Higanbana`）。
-- 不再依赖 `postMessage/BroadcastChannel` 的旧桥接通道。
+- 当前为**插件内桥接模型（BroadcastChannel RPC）**。
+- WebZip 页面中的 `window.Higanbana / window.higanbana / window.ST_API` 为桥接代理对象。
+- 新标签页场景不依赖 `opener` 直连。
+
+> ⚠ 注意：请不要在项目页里手动执行类似 `window.Higanbana = top.Higanbana`、`window.ST_API = top.ST_API` 的覆盖逻辑。
+> 这会绕过桥接代理，导致“当前项目自动推断”失效，进而出现 `缺少目标项目标识` 报错。
+
+---
+
+## 注意事项（强烈建议）
+
+1. **不要手动覆盖桥接全局对象**：避免 `window.Higanbana = top.Higanbana` / `window.ST_API = top.ST_API`。
+2. **在项目页执行更新/删除更稳**：即 URL 形如 `/vfs/<zipSha256>/...`，可自动推断当前目标。
+3. **跨页调用时显式传目标**：请传 `targetProjectId` 或 `targetZipSha256`，不要依赖自动推断。
 
 ---
 
