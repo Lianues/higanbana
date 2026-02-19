@@ -177,10 +177,11 @@ function buildProjectBlobWrapperHtml(vfsHomeUrl: string): string {
       const loading = document.getElementById('loading');
       const OUTER_TYPE = 'HB_IFRAME_HEIGHT';
       const iframeName = String(window.name || '');
-      const clamp = (h) => Math.max(80, Math.min(Number(h) || 0, 10000));
       const setHeight = (h) => {
-        const px = clamp(h);
-        if (!px) return;
+        const px = Number(h);
+        if (!Number.isFinite(px) || px <= 0) return;
+        // 与消息列表 iframe 保持一致：高度按内容自适应，不做最大/最小限制。
+        // 初始展示高度由 #inner 的 CSS（260px）提供。
         inner.style.height = px + 'px';
         try {
           if (iframeName) {

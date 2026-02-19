@@ -104,6 +104,49 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     }
   };
 
+  const sanitizeRpcValue = (value, seen) => {
+    if (value === null || value === undefined) return value;
+    const t = typeof value;
+    if (t === 'string' || t === 'number' || t === 'boolean' || t === 'bigint') return value;
+    if (t === 'function') return { __hb_rpc_unserializable__: 'function' };
+    if (t === 'symbol') return String(value);
+
+    if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) return value;
+    if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(value)) return value;
+    if (typeof Blob !== 'undefined' && value instanceof Blob) return value;
+    if (typeof Date !== 'undefined' && value instanceof Date) return new Date(value.getTime());
+    if (typeof RegExp !== 'undefined' && value instanceof RegExp) return new RegExp(value.source, value.flags);
+
+    if (typeof Window !== 'undefined' && value instanceof Window) return { __hb_rpc_unserializable__: 'window' };
+    if (typeof Document !== 'undefined' && value instanceof Document) return { __hb_rpc_unserializable__: 'document' };
+    if (typeof Element !== 'undefined' && value instanceof Element) {
+      return { __hb_rpc_unserializable__: 'element', tag: String(value.tagName || '').toLowerCase() };
+    }
+
+    if (!seen) seen = new WeakMap();
+    if (seen.has(value)) return { __hb_rpc_cycle__: true };
+    seen.set(value, true);
+
+    if (Array.isArray(value)) {
+      return value.map(v => sanitizeRpcValue(v, seen));
+    }
+
+    const out = {};
+    try {
+      for (const k of Object.keys(value)) {
+        out[k] = sanitizeRpcValue(value[k], seen);
+      }
+      return out;
+    } catch {
+      return { __hb_rpc_unserializable__: 'object' };
+    }
+  };
+
+  const sanitizeRpcArgs = args => {
+    if (!Array.isArray(args)) return [];
+    return args.map(v => sanitizeRpcValue(v, new WeakMap()));
+  };
+
   const callBridgeRpc = (root, path, args) => {
     const ch = ensureRpcChannel();
     if (!ch) {
@@ -125,7 +168,7 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
           clientId: HB_RPC_CLIENT_ID,
           root,
           path: Array.isArray(path) ? path : [],
-          args: Array.isArray(args) ? args : [],
+          args: sanitizeRpcArgs(args),
         });
       } catch (err) {
         hbRpcPending.delete(id);
@@ -170,10 +213,20 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
     });
   };
 
+  const shouldSkipBridgeGlobalKey = key => {
+    const k = String(key || '').trim();
+    if (!k) return true;
+    if (k === '__proto__' || k === 'prototype' || k === 'constructor') return true;
+    if (/^__VUE/.test(k)) return true;
+    if (/^__REACT/.test(k)) return true;
+    if (k === 'foxAgentCrossRequestVersion') return true;
+    return false;
+  };
+
   const defineBridgeGlobalGetter = key => {
     const k = String(key || '').trim();
     if (!k) return;
-    if (k === '__proto__' || k === 'prototype' || k === 'constructor') return;
+    if (shouldSkipBridgeGlobalKey(k)) return;
     if (k in G) return;
 
     try {
@@ -182,6 +235,18 @@ function buildRuntimeScript(opts: HbHtmlRuntimeInjectOptions): string {
         enumerable: false,
         get() {
           return createBridgeProxy('__HB_GLOBAL__', [k]);
+        },
+        set(v) {
+          try {
+            Object.defineProperty(G, k, {
+              value: v,
+              writable: true,
+              configurable: true,
+              enumerable: false,
+            });
+          } catch {
+            // ignore
+          }
         },
       });
     } catch {

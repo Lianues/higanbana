@@ -28,8 +28,7 @@ function measureIframeDocumentHeight(iframe: HTMLIFrameElement): number | null {
 function updateIframeHeight(iframe: HTMLIFrameElement): void {
   const h = measureIframeDocumentHeight(iframe);
   if (!h) return;
-  const clamped = Math.max(80, Math.min(h, 10000));
-  iframe.style.height = `${clamped}px`;
+  iframe.style.height = `${h}px`;
 }
 
 export function installIframeAutoResize(iframe: HTMLIFrameElement): void {
