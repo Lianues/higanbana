@@ -7,14 +7,37 @@ import {
 
 type AnyRecord = Record<string, any>;
 
-function parseCurrentZipSha256(): string {
+function parseZipSha256FromPath(pathnameInput: unknown): string {
   try {
-    const pathname = String(location.pathname || '');
+    const pathname = String(pathnameInput ?? '').trim();
+    if (!pathname) return '';
     const m = pathname.match(/\/vfs\/([^/]+)\//);
     if (!m || !m[1]) return '';
     return decodeURIComponent(m[1]);
   } catch {
     return '';
+  }
+}
+
+function getBridgeCallerPath(payload: AnyRecord): string {
+  const p1 = String(payload?.__hbCallerPath ?? '').trim();
+  if (p1) return p1;
+
+  const href = String(payload?.__hbCallerHref ?? '').trim();
+  if (!href) return '';
+  try {
+    return String(new URL(href).pathname || '');
+  } catch {
+    return '';
+  }
+}
+
+function stripBridgeMeta(payload: AnyRecord): void {
+  try {
+    delete payload.__hbCallerPath;
+    delete payload.__hbCallerHref;
+  } catch {
+    // ignore
   }
 }
 
@@ -24,17 +47,18 @@ function normalizePayload<T extends AnyRecord>(params: unknown): T {
 
 function withCurrentTargetFallback<T extends AnyRecord>(payload: T): T {
   if (!payload.targetProjectId && !payload.targetZipSha256) {
-    // 兼容桥接场景：
-    // - 直连调用时，读取当前 window.location.pathname
-    // - RPC 桥接调用时，优先使用调用端注入的 __hbCurrentZipSha256
-    const zipSha256 = String(payload.__hbCurrentZipSha256 ?? '').trim() || parseCurrentZipSha256();
-    if (zipSha256) payload.targetZipSha256 = zipSha256;
+    // 桥接调用时优先使用“调用方页面路径”（例如 /vfs/<sha>/...），
+    // 再回退到当前宿主页面 location（兼容主页面直调）。
+    const fromCallerPath = parseZipSha256FromPath(getBridgeCallerPath(payload));
+    if (fromCallerPath) {
+      payload.targetZipSha256 = fromCallerPath;
+    } else {
+      const fromCurrentLocation = parseZipSha256FromPath(typeof location !== 'undefined' ? location.pathname : '');
+      if (fromCurrentLocation) payload.targetZipSha256 = fromCurrentLocation;
+    }
   }
-  try {
-    delete payload.__hbCurrentZipSha256;
-  } catch {
-    // ignore
-  }
+
+  stripBridgeMeta(payload);
   return payload;
 }
 
@@ -105,12 +129,14 @@ export function registerGlobalApi(): void {
     if (!payload.includeAll) {
       withCurrentTargetFallback(payload);
     }
+    stripBridgeMeta(payload);
     return getProjectInActiveCard(payload);
   };
 
   api.createProject = async (params: unknown = {}) => {
     const payload = normalizePayload<AnyRecord>(params);
     await normalizeZipPayload(payload);
+    stripBridgeMeta(payload);
     return await createProjectInActiveCard(payload);
   };
 
@@ -118,12 +144,14 @@ export function registerGlobalApi(): void {
     const payload = normalizePayload<AnyRecord>(params);
     await normalizeZipPayload(payload);
     withCurrentTargetFallback(payload);
+    stripBridgeMeta(payload);
     return await updateProjectInActiveCard(payload);
   };
 
   api.deleteProject = async (params: unknown = {}) => {
     const payload = normalizePayload<AnyRecord>(params);
     withCurrentTargetFallback(payload);
+    stripBridgeMeta(payload);
     return await deleteProjectInActiveCard(payload);
   };
 

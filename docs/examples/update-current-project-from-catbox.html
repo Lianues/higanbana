@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Higanbana：下载并覆盖当前项目示例</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: #111827;
+        color: #e5e7eb;
+      }
+      .wrap {
+        max-width: 760px;
+        margin: 24px auto;
+        padding: 16px;
+      }
+      .card {
+        border: 1px solid #374151;
+        border-radius: 12px;
+        padding: 16px;
+        background: #1f2937;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+      p {
+        margin: 8px 0;
+        color: #cbd5e1;
+      }
+      .row {
+        margin: 10px 0;
+      }
+      label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 13px;
+        color: #d1d5db;
+      }
+      input,
+      select,
+      button {
+        width: 100%;
+        box-sizing: border-box;
+        border-radius: 8px;
+        border: 1px solid #4b5563;
+        padding: 10px;
+        background: #111827;
+        color: #f9fafb;
+      }
+      button {
+        cursor: pointer;
+        background: #2563eb;
+        border-color: #2563eb;
+        font-weight: 600;
+      }
+      button:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+      }
+      pre {
+        margin-top: 12px;
+        background: #0b1220;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        padding: 10px;
+        min-height: 140px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .hint {
+        font-size: 12px;
+        color: #9ca3af;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>下载 zip 并覆盖当前项目</h1>
+        <p>
+          本示例会从指定 URL 下载 zip，然后调用
+          <code>window.Higanbana.updateProject(...)</code> 覆盖当前项目。
+        </p>
+
+        <div class="row">
+          <label for="zipUrl">Zip 下载地址</label>
+          <input id="zipUrl" type="text" value="https://files.catbox.moe/8sazgq.zip" />
+        </div>
+
+        <div class="row">
+          <label for="targetProjectId">目标项目 ID（可留空）</label>
+          <input id="targetProjectId" type="text" placeholder="留空时默认按当前页面 /vfs/<sha>/ 自动定位" />
+        </div>
+
+        <div class="row">
+          <label for="source">更新后的 source</label>
+          <select id="source">
+            <option value="local" selected>local（推荐）</option>
+            <option value="embedded">embedded（会写入角色卡，受 20MB 限制）</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <label for="homePage">preferredHomePage</label>
+          <input id="homePage" type="text" value="index.html" />
+        </div>
+
+        <div class="row">
+          <button id="runBtn" type="button">下载并覆盖当前项目</button>
+        </div>
+
+        <div class="hint">
+          注意：请在彼岸花渲染的项目页面中运行，统一使用当前页 <code>window.Higanbana</code>（不要依赖 <code>top</code>）。
+          若不填写 <code>targetProjectId</code>，示例会按当前页面 <code>/vfs/&lt;sha&gt;/...</code> 自动兜底为 <code>targetZipSha256</code>。
+        </div>
+
+        <pre id="log"></pre>
+      </div>
+    </div>
+
+    <script>
+      const logEl = document.getElementById('log');
+      const runBtn = document.getElementById('runBtn');
+
+      function log(msg) {
+        const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        logEl.textContent += (logEl.textContent ? '\n' : '') + line;
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function inferZipName(url) {
+        try {
+          const u = new URL(String(url || ''), location.href);
+          const last = u.pathname.split('/').filter(Boolean).pop();
+          return last || 'update.zip';
+        } catch {
+          return 'update.zip';
+        }
+      }
+
+      async function downloadZipArrayBuffer(url, onProgress) {
+        const resp = await fetch(url, { cache: 'no-store' });
+        if (!resp.ok) {
+          throw new Error(`下载失败：HTTP ${resp.status}`);
+        }
+
+        const total = Number(resp.headers.get('content-length') || 0);
+        if (!resp.body) {
+          const buf = await resp.arrayBuffer();
+          if (onProgress) onProgress(buf.byteLength, buf.byteLength);
+          return buf;
+        }
+
+        const reader = resp.body.getReader();
+        const chunks = [];
+        let received = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            received += value.byteLength;
+            if (onProgress) onProgress(received, total);
+          }
+        }
+
+        const out = new Uint8Array(received);
+        let offset = 0;
+        for (const chunk of chunks) {
+          out.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        return out.buffer;
+      }
+      function parseCurrentZipSha256FromPath() {
+        try {
+          const pathname = String(location.pathname || '');
+          const m = pathname.match(/\/vfs\/([^/]+)\//);
+          if (!m || !m[1]) return '';
+          return decodeURIComponent(m[1]);
+        } catch {
+          return '';
+        }
+      }
+
+      function probeGlobals() {
+        const hb = window.Higanbana;
+        const stApi = window.ST_API;
+
+        log(`window.Higanbana: ${hb ? '有响应' : '无响应'}`);
+        log(`window.ST_API: ${stApi ? '有响应' : '无响应'}`);
+        return { hb, stApi };
+      }
+
+      async function run() {
+        const { hb } = probeGlobals();
+
+        const directHb = hb && typeof hb.updateProject === 'function' ? hb : null;
+        if (!directHb) {
+          throw new Error('未检测到 window.Higanbana.updateProject，请确认在彼岸花渲染页面中运行。');
+        } else {
+          log('已获取到 Higanbana API。');
+        }
+
+        const zipUrl = document.getElementById('zipUrl').value.trim();
+        const targetProjectId = document.getElementById('targetProjectId').value.trim();
+        const source = document.getElementById('source').value;
+        const preferredHomePage = document.getElementById('homePage').value.trim() || 'index.html';
+
+        if (!zipUrl) {
+          throw new Error('zipUrl 不能为空');
+        }
+
+        const zipName = inferZipName(zipUrl);
+        log(`开始下载：${zipUrl}`);
+
+        const buf = await downloadZipArrayBuffer(zipUrl, (received, total) => {
+          if (total > 0) {
+            const percent = ((received / total) * 100).toFixed(1);
+            log(`下载进度：${percent}% (${received}/${total} bytes)`);
+          } else {
+            log(`已下载：${received} bytes`);
+          }
+        });
+
+        log(`下载完成，大小：${buf.byteLength} bytes`);
+        log('开始调用 updateProject 覆盖项目...');
+
+        const payload = {
+          zipArrayBuffer: buf,
+          zipName,
+          source,
+          preferredHomePage,
+        };
+
+        if (targetProjectId) {
+          payload.targetProjectId = targetProjectId;
+          log(`使用 targetProjectId：${targetProjectId}`);
+        } else {
+          const targetZipSha256 = parseCurrentZipSha256FromPath();
+          if (targetZipSha256) {
+            payload.targetZipSha256 = targetZipSha256;
+            log(`未填写 targetProjectId，已按当前页面路径自动使用 targetZipSha256：${targetZipSha256}`);
+          } else {
+            throw new Error(
+              '当前页面路径不包含 /vfs/<sha>/，且未填写 targetProjectId。请填写目标项目 ID，或在目标项目页面内运行。',
+            );
+          }
+        }
+
+        const result = await directHb.updateProject(payload);
+        log('覆盖成功 ✅');
+        log('返回结果：\n' + JSON.stringify(result, null, 2));
+      }
+
+      runBtn.addEventListener('click', async () => {
+        runBtn.disabled = true;
+        try {
+          await run();
+        } catch (err) {
+          console.error('[HB demo] update failed', err);
+          log('失败 ❌：' + (err && err.message ? err.message : String(err)));
+        } finally {
+          runBtn.disabled = false;
+        }
+      });
+
+      // 页面加载后先打印一次 API 探测信息
+      probeGlobals();
+    </script>
+  </body>
+</html>

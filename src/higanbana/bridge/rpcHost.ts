@@ -8,6 +8,8 @@ type RpcReqMessage = {
   clientId?: string;
   root: string;
   path: string[];
+  callerPath?: string;
+  callerHref?: string;
   args?: unknown[];
 };
 
@@ -80,6 +82,37 @@ function getAllowedRoot(root: string): any {
   if (root === '__HB_GLOBAL__') return G;
   if (root === '__HB_INTERNAL__') return getBridgeInternalApi();
   return undefined;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object') return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function isHiganbanaTargetCall(root: string, path: string[]): boolean {
+  const method = String(path[path.length - 1] || '').trim();
+  if (!method) return false;
+  if (method !== 'getProject' && method !== 'updateProject' && method !== 'deleteProject') return false;
+
+  if (root === 'Higanbana' || root === 'higanbana') return true;
+
+  if (root === '__HB_GLOBAL__') {
+    const first = String(path[0] || '').trim();
+    return first === 'Higanbana' || first === 'higanbana';
+  }
+
+  return false;
+}
+
+function attachBridgeCallerMetaToArgs(root: string, path: string[], args: unknown[], req: RpcReqMessage): unknown[] {
+  if (!isHiganbanaTargetCall(root, path)) return args;
+  const out = [...args];
+  if (!isPlainObject(out[0])) out[0] = {};
+  const p = out[0] as Record<string, unknown>;
+  if (req.callerPath && !p.__hbCallerPath) p.__hbCallerPath = String(req.callerPath);
+  if (req.callerHref && !p.__hbCallerHref) p.__hbCallerHref = String(req.callerHref);
+  return out;
 }
 
 function canDirectReturnValue(value: unknown): boolean {
@@ -158,8 +191,8 @@ async function onMessage(evt: MessageEvent<RpcReqMessage>): Promise<void> {
 
   const id = String(data.id || '').trim();
   const root = String(data.root || '').trim();
-  const path = data.path;
-  const args = Array.isArray(data.args) ? data.args : [];
+  const path = Array.isArray(data.path) ? data.path : [];
+  const rawArgs = Array.isArray(data.args) ? data.args : [];
 
   if (!id || !root || !isSafePath(path)) {
     postResponse({
@@ -173,7 +206,8 @@ async function onMessage(evt: MessageEvent<RpcReqMessage>): Promise<void> {
   }
 
   try {
-    const result = await invokeTarget(root, path, args);
+    const invokeArgs = attachBridgeCallerMetaToArgs(root, path, rawArgs, data);
+    const result = await invokeTarget(root, path, invokeArgs);
     postResponse({
       type: HB_RPC_RES,
       id,

@@ -1,6 +1,6 @@
 # Higanbana API 接口说明（CRUD）
 
-> 适用范围：由彼岸花渲染的 WebZip 页面（`/vfs/<zipSha256>/...`）及其同源子页面（运行时会直连复用上层同源全局）。
+> 适用范围：由彼岸花渲染的 WebZip 页面（`/vfs/<zipSha256>/...`）及其同源子页面（运行时会通过插件内桥接通道透传主页面能力）。
 
 ---
 
@@ -26,23 +26,27 @@
 运行模型说明：
 
 - 当前为**插件内桥接模型（BroadcastChannel RPC）**。
-- WebZip 页面中的 `window.Higanbana / window.higanbana / window.ST_API` 为桥接代理对象。
-- 新标签页场景不依赖 `opener` 直连。
-
-> ⚠ 注意：请不要在项目页里手动执行类似 `window.Higanbana = top.Higanbana`、`window.ST_API = top.ST_API` 的覆盖逻辑。
-> 这会绕过桥接代理，导致“当前项目自动推断”失效，进而出现 `缺少目标项目标识` 报错。
-
----
-
-## 注意事项（强烈建议）
-
-1. **不要手动覆盖桥接全局对象**：避免 `window.Higanbana = top.Higanbana` / `window.ST_API = top.ST_API`。
-2. **在项目页执行更新/删除更稳**：即 URL 形如 `/vfs/<zipSha256>/...`，可自动推断当前目标。
-3. **跨页调用时显式传目标**：请传 `targetProjectId` 或 `targetZipSha256`，不要依赖自动推断。
+- 新标签页默认使用 `noopener/noreferrer`，因此 `top/opener` 在很多场景下不可访问，这是预期行为。
+- 请统一通过当前页 `window.xxx` 调用（例如 `window.Higanbana`），不要依赖 `top.xxx`。
+- 运行时会优先提供核心入口（`Higanbana` / `higanbana` / `ST_API`），并按需透传主页面全局对象。
 
 ---
 
 ## 2) 通用规则
+
+### 2.0 兜底机制（桥接调用）
+
+在插件内桥接（BroadcastChannel RPC）模式下，`updateProject/deleteProject/getProject` 的请求会自动携带调用方页面信息：
+
+- `callerPath`
+- `callerHref`
+
+主页面 API 侧会优先用调用方路径推断当前 `zipSha256`（即 `/vfs/<sha>/...` 中的 `<sha>`），
+这样即使实际执行发生在主页面，也能按“调用页面上下文”定位目标项目。
+
+> 注意：这是一层自动兜底，不改变最佳实践。生产调用仍建议显式传 `targetProjectId` 或 `targetZipSha256`，可避免路径不规范或跨页调用时的歧义。
+
+---
 
 ### 2.1 目标项目定位（用于 Read/Update/Delete）
 
@@ -55,6 +59,11 @@
 
 - 在 `/vfs/<zipSha256>/...` 页面中，会自动尝试按“当前页面 zipSha256”匹配当前项目。
 - 若无法推断：`getProject` 默认返回全部项目；`update/delete` 会报缺少目标错误。
+
+实践建议：
+
+- 调用 `updateProject/deleteProject` 时，建议显式传 `targetProjectId` 或 `targetZipSha256`。
+- 示例页若不在目标 `/vfs/<sha>/...` 页面内运行，必须手动传目标参数，否则会报“缺少目标项目标识”。
 
 ### 2.2 刷新行为
 
@@ -265,7 +274,14 @@ await window.Higanbana.updateProject({
 ```js
 const buf = await (await fetch('/update/app.zip')).arrayBuffer();
 
+// 推荐：显式指定目标（二选一）
+// const targetProjectId = '...';
+// const targetZipSha256 = '...';
+
 const r = await window.Higanbana.updateProject({
+  // targetProjectId,
+  // targetZipSha256,
+
   zipArrayBuffer: buf,
   zipName: 'app.zip',
   source: 'local',
@@ -321,12 +337,13 @@ await window.Higanbana.deleteProject();
 
 | 报错 | 原因 |
 |---|---|
-| `缺少目标项目标识，请提供 targetProjectId 或 targetZipSha256` | update/delete 没传目标，且当前页面无法推断目标项目。 |
+| `缺少目标项目标识，请提供 targetProjectId 或 targetZipSha256` | update/delete 没传目标，且当前页面不在可推断的 `/vfs/<sha>/...` 路径。 |
 | `找不到目标项目：...` | 传入的 `targetProjectId` 不存在。 |
 | `占位符已被其它项目占用：...` | update 时 placeholder 与其他项目冲突。 |
 | `source=url 时 zipUrl 不能为空` | 创建或更新为 URL 模式时未提供 `zipUrl`。 |
 | `source=local 时 zipSha256 不能为空...` | local 模式未提供 zipSha256，也未提供可导入 zip 数据。 |
 | `当前 zip 大小为 ...，超过嵌入上限（20 MB）` | embedded 模式超过上限。 |
+| 明明在项目页调用却仍提示缺少目标 | 页面路径不符合 `/vfs/<sha>/...`，或调用发生在非项目页；请显式传 `targetProjectId/targetZipSha256`。 |
 
 ---
 
